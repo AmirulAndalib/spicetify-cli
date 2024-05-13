@@ -164,18 +164,49 @@ func CopyFile(srcPath, dest string) error {
 
 // Replace uses Regexp to find any matched from `input` with `regexpTerm`
 // and replaces them with `replaceTerm` then returns new string.
-func Replace(input *string, regexpTerm string, replaceTerm string) {
-	re := regexp.MustCompile(regexpTerm)
-	*input = re.ReplaceAllString(*input, replaceTerm)
+func Replace(str *string, pattern string, repl func(submatches ...string) string) {
+	re := regexp.MustCompile(pattern)
+	*str = re.ReplaceAllStringFunc(*str, func(match string) string {
+		submatches := re.FindStringSubmatch(match)
+		return repl(submatches...)
+	})
 }
 
-func ReplaceOnce(input *string, regexpTerm string, replaceTerm string) {
+func ReplaceOnce(str *string, pattern string, repl func(submatches ...string) string) {
+	re := regexp.MustCompile(pattern)
+	firstMatch := true
+	*str = re.ReplaceAllStringFunc(*str, func(match string) string {
+		if firstMatch {
+			firstMatch = false
+			submatches := re.FindStringSubmatch(match)
+			if submatches != nil {
+				return repl(submatches...)
+			}
+		}
+		return match
+	})
+}
+
+func FindMatch(input string, regexpTerm string) [][]string {
 	re := regexp.MustCompile(regexpTerm)
-	matches := re.FindAllString(*input, -1)
+	matches := re.FindAllStringSubmatch(input, -1)
+	return matches
+}
+
+func FindFirstMatch(input string, regexpTerm string) []string {
+	matches := FindMatch(input, regexpTerm)
 	if len(matches) > 0 {
-		toReplace := re.ReplaceAllString(matches[0], replaceTerm)
-		*input = strings.Replace(*input, matches[0], toReplace, 1)
+		return matches[0]
 	}
+	return nil
+}
+
+func FindLastMatch(input string, regexpTerm string) []string {
+	matches := FindMatch(input, regexpTerm)
+	if len(matches) > 0 {
+		return matches[len(matches)-1]
+	}
+	return nil
 }
 
 // ModifyFile opens file, changes file content by executing
@@ -247,7 +278,7 @@ func FindSymbol(debugInfo, content string, clues []string) []string {
 	}
 
 	if len(debugInfo) > 0 {
-		PrintError("cannot find symbol for " + debugInfo)
+		PrintError("Cannot find symbol for " + debugInfo)
 	}
 
 	return nil

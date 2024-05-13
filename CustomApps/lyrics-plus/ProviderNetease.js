@@ -10,7 +10,7 @@ const ProviderNetease = (() => {
 		const cleanTitle = Utils.removeExtraInfo(Utils.removeSongFeat(Utils.normalize(info.title)));
 		const finalURL = searchURL + encodeURIComponent(`${cleanTitle} ${info.artist}`);
 
-		const searchResults = await CosmosAsync.get(finalURL, null, requestHeader);
+		const searchResults = await Spicetify.CosmosAsync.get(finalURL, null, requestHeader);
 		const items = searchResults.result.songs;
 		if (!items?.length) {
 			throw "Cannot find track";
@@ -22,7 +22,7 @@ const ProviderNetease = (() => {
 		const itemId = items.findIndex(val => Utils.normalize(val.album.name) === expectedAlbumName || Math.abs(info.duration - val.duration) < 1000);
 		if (itemId === -1) throw "Cannot find track";
 
-		return await CosmosAsync.get(lyricURL + items[itemId].id, null, requestHeader);
+		return await Spicetify.CosmosAsync.get(lyricURL + items[itemId].id, null, requestHeader);
 	}
 
 	const creditInfo = [
@@ -71,7 +71,7 @@ const ProviderNetease = (() => {
 			if (components[i + 1] === " ") continue;
 			result.push({
 				word: `${components[i + 1]} `,
-				time: parseInt(components[i])
+				time: Number.parseInt(components[i])
 			});
 		}
 		return result;
@@ -91,7 +91,7 @@ const ProviderNetease = (() => {
 				if (!time || !text) return null;
 
 				const [key, value] = time.split(",") || [];
-				const [start, durr] = [parseFloat(key), parseFloat(value)];
+				const [start, durr] = [Number.parseFloat(key), Number.parseFloat(value)];
 
 				if (!Number.isNaN(start) && !Number.isNaN(durr) && !containCredits(text)) {
 					return {
@@ -127,7 +127,7 @@ const ProviderNetease = (() => {
 				if (!time || !text) return null;
 
 				const [key, value] = time.split(":") || [];
-				const [min, sec] = [parseFloat(key), parseFloat(value)];
+				const [min, sec] = [Number.parseFloat(key), Number.parseFloat(value)];
 				if (!Number.isNaN(min) && !Number.isNaN(sec) && !containCredits(text)) {
 					return {
 						startTime: (min * 60 + sec) * 1000,
@@ -158,7 +158,7 @@ const ProviderNetease = (() => {
 				if (!time || !text) return null;
 
 				const [key, value] = time.split(":") || [];
-				const [min, sec] = [parseFloat(key), parseFloat(value)];
+				const [min, sec] = [Number.parseFloat(key), Number.parseFloat(value)];
 				if (!Number.isNaN(min) && !Number.isNaN(sec) && !containCredits(text)) {
 					return {
 						startTime: (min * 60 + sec) * 1000,

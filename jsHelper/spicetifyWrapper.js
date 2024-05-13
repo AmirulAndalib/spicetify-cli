@@ -1,7 +1,4 @@
 window.Spicetify = {
-	get CosmosAsync() {
-		return Spicetify.Player.origin?._cosmos;
-	},
 	Player: {
 		addEventListener: (type, callback) => {
 			if (!(type in Spicetify.Player.eventListeners)) {
@@ -93,9 +90,7 @@ window.Spicetify = {
 			return await Spicetify.Player.origin.play({ uri: uri }, context, options);
 		},
 		removeEventListener: (type, callback) => {
-			if (!(type in Spicetify.Player.eventListeners)) {
-				return;
-			}
+			if (!(type in Spicetify.Player.eventListeners)) return;
 			const stack = Spicetify.Player.eventListeners[type];
 			for (let i = 0; i < stack.length; i++) {
 				if (stack[i] === callback) {
@@ -166,9 +161,6 @@ window.Spicetify = {
 					"Topbar",
 					"ReactComponent",
 					"PopupModal",
-					"_cloneSidebarItem",
-					// Deprecated since Spotify 1.2.14
-					// "_sidebarItemToClone",
 					"SVGIcons",
 					"colorExtractor",
 					"test",
@@ -185,17 +177,18 @@ window.Spicetify = {
 					"_getStyledClassName",
 					"GraphQL",
 					"ReactHook",
-					"_sidebarXItemToClone",
 					"AppTitle",
 					"_reservedPanelIds",
-					"Panel",
 					"ReactFlipToolkit",
 					"classnames",
 					"ReactQuery",
 					"Color",
 					"extractColorPreset",
 					"ReactDOMServer",
-					"Snackbar"
+					"Snackbar",
+					"ContextMenuV2",
+					"ReactJSX",
+					"_renderNavLinks"
 				])
 			},
 			{
@@ -257,9 +250,6 @@ window.Spicetify = {
 					"TextComponent",
 					"IconComponent",
 					"ConfirmDialog",
-					"PanelContent",
-					"PanelSkeleton",
-					"PanelHeader",
 					"Slider",
 					"RemoteConfigProvider",
 					"ButtonPrimary",
@@ -268,18 +258,40 @@ window.Spicetify = {
 					"Snackbar",
 					"Chip",
 					"Toggle",
-					"Cards"
+					"Cards",
+					"Router",
+					"Routes",
+					"Route",
+					"StoreProvider",
+					"PlatformProvider",
+					"Dropdown",
+					"MenuSubMenuItem",
+					"Navigation",
+					"ScrollableContainer"
 				])
 			},
 			{
 				objectToCheck: Spicetify.ReactComponent.Cards,
 				name: "Spicetify.ReactComponent.Cards",
-				methods: new Set(["Default", "Hero", "CardImage", "Album", "Artist", "Audiobook", "Episode", "Playlist", "Profile", "Show", "Track"])
+				methods: new Set([
+					"Default",
+					"Hero",
+					"CardImage",
+					"Album",
+					"Artist",
+					"Audiobook",
+					"Episode",
+					"Playlist",
+					"Profile",
+					"Show",
+					"Track",
+					"FeatureCard"
+				])
 			},
 			{
 				objectToCheck: Spicetify.ReactHook,
 				name: "Spicetify.ReactHook",
-				methods: new Set(["DragHandler", "usePanelState", "useExtractedColor"])
+				methods: new Set(["DragHandler", "useExtractedColor"])
 			}
 		]);
 
@@ -297,9 +309,102 @@ window.Spicetify = {
 	Platform: {}
 };
 
+(function addProxyCosmos() {
+	if (!Spicetify.Player.origin?._cosmos) {
+		setTimeout(addProxyCosmos, 50);
+		return;
+	}
+
+	const corsProxyURL = "https://cors-proxy.spicetify.app";
+	const allowedMethodsMap = {
+		get: "get",
+		post: "post",
+		del: "delete",
+		put: "put",
+		patch: "patch"
+	};
+	const allowedMethodsSet = new Set(Object.keys(allowedMethodsMap));
+	const internalEndpoints = new Set(["sp:", "wg:"]);
+
+	const handler = {
+		get: (target, prop, receiver) => {
+			const internalFetch = Reflect.get(target, prop, receiver);
+
+			if (typeof internalFetch !== "function" || !allowedMethodsSet.has(prop) || Spicetify.Platform.version < "1.2.31") return internalFetch;
+
+			return async function (url, body) {
+				const urlObj = new URL(url);
+
+				const isWebAPI = urlObj.hostname === "api.spotify.com";
+				const isSpClientAPI = urlObj.hostname.includes("spotify.com") && urlObj.hostname.includes("spclient");
+				const isInternalURL = internalEndpoints.has(urlObj.protocol);
+				if (isInternalURL) return internalFetch.apply(this, [url, body]);
+
+				const shouldUseCORSProxy = !isWebAPI && !isSpClientAPI && !isInternalURL;
+
+				const method = allowedMethodsMap[prop.toLowerCase()];
+				const headers = {
+					"Content-Type": "application/json"
+				};
+
+				const options = {
+					method,
+					headers,
+					timeout: 1000 * 15
+				};
+
+				let finalURL = urlObj.toString();
+				if (body) {
+					if (method === "get") {
+						const params = new URLSearchParams(body);
+						finalURL += `?${params.toString()}`;
+					} else options.body = !Array.isArray(body) && typeof body === "object" ? JSON.stringify(body) : body;
+				}
+				if (shouldUseCORSProxy) finalURL = `${corsProxyURL}/${finalURL}`;
+
+				const Authorization = `Bearer ${Spicetify.Platform.AuthorizationAPI.getState().token.accessToken}`;
+				let injectedHeaders = {};
+				if (isWebAPI) injectedHeaders = { Authorization };
+				if (isSpClientAPI) {
+					injectedHeaders = {
+						Authorization,
+						"Spotify-App-Version": Spicetify.Platform.version,
+						"App-Platform": Spicetify.Platform.PlatformData.app_platform
+					};
+				}
+				Object.assign(options.headers, injectedHeaders);
+
+				try {
+					return fetch(finalURL, options).then(res => {
+						if (!res.ok) return { code: res.status, error: res.statusText, message: "Failed to fetch", stack: undefined };
+						try {
+							return res.clone().json();
+						} catch {
+							try {
+								return res.clone().blob();
+							} catch {
+								return res.clone().text();
+							}
+						}
+					});
+				} catch (e) {
+					console.error(e);
+				}
+			};
+		}
+	};
+
+	Spicetify.Player.origin._cosmos = new Proxy(Spicetify.Player.origin._cosmos, handler);
+	Object.defineProperty(Spicetify, "CosmosAsync", {
+		get: () => {
+			return Spicetify.Player.origin?._cosmos;
+		}
+	});
+})();
+
 (function waitForPlatform() {
 	if (!Spicetify._platform) {
-		setTimeout(() => waitForPlatform(), 50);
+		setTimeout(waitForPlatform, 50);
 		return;
 	}
 	const { _platform } = Spicetify;
@@ -310,15 +415,21 @@ window.Spicetify = {
 			Spicetify.Platform[key] = _platform[key];
 		}
 	}
+	Spicetify.Events.platformLoaded.fire();
 })();
 
 (function hotloadWebpackModules() {
-	if (!window?.webpackChunkopen) {
+	if (!window?.webpackChunkclient_web) {
 		setTimeout(hotloadWebpackModules, 50);
 		return;
 	}
 	// Force all webpack modules to load
-	const require = webpackChunkopen.push([[Symbol()], {}, re => re]);
+	const require = webpackChunkclient_web.push([[Symbol()], {}, re => re]);
+	const chunks = require.m ? Object.entries(require.m) : [];
+	if (!chunks) {
+		setTimeout(hotloadWebpackModules, 50);
+		return;
+	}
 	const cache = Object.keys(require.m).map(id => require(id));
 	const modules = cache
 		.filter(module => typeof module === "object")
@@ -327,7 +438,29 @@ window.Spicetify = {
 				return Object.values(module);
 			} catch {}
 		});
+	// polyfill for chromium <117
+	const groupBy = (values, keyFinder) => {
+		if (typeof Object.groupBy === "function") return Object.groupBy(values, keyFinder);
+		return values.reduce((a, b) => {
+			const key = typeof keyFinder === "function" ? keyFinder(b) : b[keyFinder];
+			a[key] = a[key] ? [...a[key], b] : [b];
+			return a;
+		}, {});
+	};
 	const functionModules = modules.filter(module => typeof module === "function");
+	const exportedReactObjects = groupBy(modules.filter(Boolean), x => x.$$typeof);
+	const exportedMemos = exportedReactObjects[Symbol.for("react.memo")];
+	const exportedForwardRefs = exportedReactObjects[Symbol.for("react.forward_ref")];
+	const exportedMemoFRefs = exportedMemos.filter(m => m.type.$$typeof === Symbol.for("react.forward_ref"));
+	const exposeReactComponentsUI = ({ modules, functionModules, exportedForwardRefs }) => {
+		const componentNames = Object.keys(modules.filter(Boolean).find(e => e.BrowserDefaultFocusStyleProvider));
+		const componentRegexes = componentNames.map(n => new RegExp(`"data-encore-id":(?:[a-zA-Z_\$][\w\$]*\\.){2}${n}\\b`));
+		const componentPairs = [functionModules.map(f => [f, f]), exportedForwardRefs.map(f => [f.render, f])]
+			.flat()
+			.map(([s, f]) => [componentNames.find((_, i) => s.toString().match(componentRegexes[i])), f]);
+		return Object.fromEntries(componentPairs);
+	};
+	const reactComponentsUI = exposeReactComponentsUI({ modules, functionModules, exportedForwardRefs });
 
 	const knownMenuTypes = ["album", "show", "artist", "track"];
 	const menus = modules
@@ -376,10 +509,10 @@ window.Spicetify = {
 
 	Object.assign(Spicetify, {
 		React: cache.find(m => m?.useMemo),
+		ReactJSX: cache.find(m => m?.jsx),
 		ReactDOM: cache.find(m => m?.createPortal),
 		ReactDOMServer: cache.find(m => m?.renderToString),
-		// classnames
-		// https://github.com/JedWatson/classnames/
+		// classnames for 1.2.13
 		classnames: cache
 			.filter(module => typeof module === "function")
 			.find(module => module.toString().includes('"string"') && module.toString().includes("[native code]")),
@@ -395,25 +528,6 @@ window.Spicetify = {
 			get Request() {
 				return Spicetify.Platform?.GraphQLLoader || Spicetify.GraphQL.Handler?.(Spicetify.GraphQL.Context);
 			},
-			get QueryDefinitions() {
-				return Object.fromEntries(
-					Object.entries(Spicetify.GraphQL.Definitions).filter(([, value]) =>
-						value.definitions.some(def => def.kind === "OperationDefinition" && def.operation === "query")
-					)
-				);
-			},
-			get MutationDefinitions() {
-				return Object.fromEntries(
-					Object.entries(Spicetify.GraphQL.Definitions).filter(([, value]) =>
-						value.definitions.some(def => def.kind === "OperationDefinition" && def.operation === "mutation")
-					)
-				);
-			},
-			get ResponseDefinitions() {
-				return Object.fromEntries(
-					Object.entries(Spicetify.GraphQL.Definitions).filter(([, value]) => value.definitions.every(def => def.kind !== "OperationDefinition"))
-				);
-			},
 			Context: functionModules.find(m => m.toString().includes("subscription") && m.toString().includes("mutation")),
 			Handler: functionModules.find(m => m.toString().includes("GraphQL subscriptions are not supported"))
 		},
@@ -425,6 +539,7 @@ window.Spicetify = {
 			),
 			Menu: functionModules.find(m => m.toString().includes("getInitialFocusElement") && m.toString().includes("children")),
 			MenuItem: functionModules.find(m => m.toString().includes("handleMouseEnter") && m.toString().includes("onClick")),
+			MenuSubMenuItem: functionModules.find(f => f.toString().includes("subMenuIcon")),
 			Slider: wrapProvider(functionModules.find(m => m.toString().includes("onStepBackward") && !m.toString().includes("volume"))),
 			RemoteConfigProvider: functionModules.find(m => m.toString().includes("resolveSuspense") && m.toString().includes("configuration")),
 			RightClickMenu: functionModules.find(
@@ -432,43 +547,66 @@ window.Spicetify = {
 					m.toString().includes("action") && m.toString().includes("open") && m.toString().includes("trigger") && m.toString().includes("right-click")
 			),
 			TooltipWrapper: functionModules.find(m => m.toString().includes("renderInline") && m.toString().includes("showDelay")),
-			PanelHeader: functionModules.find(m => m.toString().includes("panel") && m.toString().includes("actions")),
-			PanelContent:
-				modules.find(m => m?.render?.toString().includes("scrollBarContainer")) ||
-				functionModules.find(m => m.toString().includes("scrollBarContainer")),
-			PanelSkeleton:
-				functionModules.find(m => m.toString().includes("label") && m.toString().includes("aside")) ||
-				modules.find(m => m?.render?.toString().includes('"section"')),
-			ButtonPrimary: modules.find(m => m?.render && m?.displayName === "ButtonPrimary"),
-			ButtonSecondary: modules.find(m => m?.render && m?.displayName === "ButtonSecondary"),
-			ButtonTertiary: modules.find(m => m?.render && m?.displayName === "ButtonTertiary"),
+			ButtonPrimary: reactComponentsUI.ButtonPrimary,
+			ButtonSecondary: reactComponentsUI.ButtonSecondary,
+			ButtonTertiary: reactComponentsUI.ButtonTertiary,
 			Snackbar: {
 				wrapper: functionModules.find(m => m.toString().includes("encore-light-theme") && m.toString().includes("elevated")),
 				simpleLayout: functionModules.find(m => ["leading", "center", "trailing"].every(keyword => m.toString().includes(keyword))),
 				ctaText: functionModules.find(m => m.toString().includes("ctaText")),
 				styledImage: functionModules.find(m => m.toString().includes("placeholderSrc"))
 			},
-			Chip: modules.find(m => m?.render?.toString().includes("invertedDark") && m?.render?.toString().includes("isUsingKeyboard")),
+			Chip: reactComponentsUI.Chip,
 			Toggle: functionModules.find(m => m.toString().includes("onSelected") && m.toString().includes('type:"checkbox"')),
 			Cards: {
-				Default: functionModules.find(m => m?.toString().includes('"card-click-handler"')),
+				Default: reactComponentsUI.Card,
+				FeatureCard: functionModules.find(
+					m => m.toString().includes("?highlight") && m.toString().includes("headerText") && m.toString().includes("imageContainer")
+				),
 				Hero: functionModules.find(m => m?.toString().includes('"herocard-click-handler"')),
-				CardImage: functionModules.find(m => m.toString().includes("isHero") && m.toString().includes("withWaves")),
+				CardImage: functionModules.find(
+					m =>
+						m.toString().includes("isHero") &&
+						(m.toString().includes("withWaves") || m.toString().includes("isCircular")) &&
+						m.toString().includes("imageWrapper")
+				),
 				...Object.fromEntries(cards)
 			},
+			Router: functionModules.find(m => m.toString().includes("navigationType") && m.toString().includes("static")),
+			Routes: functionModules.find(m => m.toString().match(/\([\w$]+\)\{let\{children:[\w$]+,location:[\w$]+\}=[\w$]+/)),
+			Route: functionModules.find(m => m.toString().match(/^function [\w$]+\([\w$]+\)\{\(0,[\w$]+\.[\w$]+\)\(\!1\)\}$/)),
+			StoreProvider: functionModules.find(m => m.toString().includes("notifyNestedSubs") && m.toString().includes("serverState")),
+			Navigation: exportedMemoFRefs.find(m => m.type.render.toString().includes("navigationalRoot")),
+			ScrollableContainer: functionModules.find(m => m.toString().includes("scrollLeft") && m.toString().includes("showButtons")),
+			IconComponent: reactComponentsUI.Icon,
 			...Object.fromEntries(menus)
 		},
 		ReactHook: {
 			DragHandler: functionModules.find(m => m.toString().includes("dataTransfer") && m.toString().includes("data-dragging")),
-			// deprecated since 1.2.17
-			usePanelState: functionModules.find(m => m.toString().includes("setPanelState")),
 			useExtractedColor: functionModules.find(
 				m => m.toString().includes("extracted-color") || (m.toString().includes("colorRaw") && m.toString().includes("useEffect"))
 			)
 		},
-		// React Query v3
-		// https://github.com/TanStack/query/tree/v3
-		ReactQuery: cache.find(module => module.useQuery),
+		// React Query
+		// https://github.com/TanStack/query
+		// v3 until Spotify v1.2.29
+		// v5 since Spotify v1.2.30
+		ReactQuery: cache.find(module => module.useQuery) || {
+			PersistQueryClientProvider: functionModules.find(m => m.toString().includes("persistOptions")),
+			QueryClient: functionModules.find(m => m.toString().includes("defaultMutationOptions")),
+			QueryClientProvider: functionModules.find(m => m.toString().includes("use QueryClientProvider")),
+			notifyManager: modules.find(m => m?.setBatchNotifyFunction),
+			useMutation: functionModules.find(m => m.toString().includes("mutateAsync")),
+			useQuery: functionModules.find(m =>
+				m.toString().match(/^function [\w_$]+\(([\w_$]+),([\w_$]+)\)\{return\(0,[\w_$]+\.[\w_$]+\)\(\1,[\w_$]+\.[\w_$]+,\2\)\}$/)
+			),
+			useQueryClient: functionModules.find(
+				m => m.toString().includes("client") && m.toString().includes("Provider") && m.toString().includes("mount")
+			),
+			useSuspenseQuery: functionModules.find(
+				m => m.toString().includes("throwOnError") && m.toString().includes("suspense") && m.toString().includes("enabled")
+			)
+		},
 		ReactFlipToolkit: {
 			...Spicetify.ReactFlipToolkit,
 			Flipper: functionModules.find(m => m?.prototype?.getSnapshotBeforeUpdate),
@@ -478,6 +616,8 @@ window.Spicetify = {
 		Mousetrap: cache.find(m => m?.addKeycodes),
 		Locale: modules.find(m => m?._dictionary)
 	});
+
+	if (!Spicetify.ContextMenuV2._context) Spicetify.ContextMenuV2._context = Spicetify.React.createContext({});
 
 	(function waitForSnackbar() {
 		if (!Object.keys(Spicetify.Snackbar).length) {
@@ -489,7 +629,7 @@ window.Spicetify = {
 		Spicetify.Snackbar = {
 			...Spicetify.Snackbar,
 			SnackbarProvider: functionModules.find(m => m.toString().includes("enqueueSnackbar called with invalid argument")),
-			useSnackbar: functionModules.find(m => m.toString().match(/\{return\(0,\w+\.useContext\)\(\w+\)\}/))
+			useSnackbar: functionModules.find(m => m.toString().match(/^function\(\)\{return\(0,[\w$]+\.useContext\)\([\w$]+\)\}$/))
 		};
 	})();
 
@@ -556,11 +696,36 @@ window.Spicetify = {
 		}
 	});
 
-	const playlistMenuChunk = Object.entries(require.m).find(
-		([, value]) => value.toString().includes('value:"playlist"') && value.toString().includes("contextmenu")
+	// classnames
+	// https://github.com/JedWatson/classnames/
+	const classnamesChunk = chunks.find(([_, value]) => value.toString().includes("[native code]") && !value.toString().includes("<anonymous>"));
+	if (classnamesChunk && !Spicetify.classnames) {
+		Spicetify.classnames = Object.values(require(classnamesChunk[0])).find(m => typeof m === "function");
+	}
+
+	const contextMenuChunk = chunks.find(([, value]) => value.toString().includes("toggleContextMenu"));
+	if (contextMenuChunk) {
+		Spicetify.ReactComponent.ContextMenu = Object.values(require(contextMenuChunk[0])).find(m => typeof m === "function");
+	}
+
+	const playlistMenuChunk = chunks.find(
+		([, value]) => value.toString().includes('value:"playlist"') && value.toString().includes("canView") && value.toString().includes("permissions")
 	);
-	if (playlistMenuChunk)
+	if (playlistMenuChunk) {
 		Spicetify.ReactComponent.PlaylistMenu = Object.values(require(playlistMenuChunk[0])).find(m => typeof m === "function" || typeof m === "object");
+	}
+
+	const dropdownChunk = chunks.find(([, value]) => value.toString().includes("dropDown") && value.toString().includes("isSafari"));
+	if (dropdownChunk) {
+		Spicetify.ReactComponent.Dropdown = Object.values(require(dropdownChunk[0])).find(m => typeof m === "function");
+	}
+
+	const infiniteQueryChunk = chunks.find(
+		([_, value]) => value.toString().includes("fetchPreviousPage") && value.toString().includes("getOptimisticResult")
+	);
+	if (infiniteQueryChunk) {
+		Spicetify.ReactQuery.useInfiniteQuery = Object.values(require(infiniteQueryChunk[0])).find(m => typeof m === "function");
+	}
 
 	if (Spicetify.Color) Spicetify.Color.CSSFormat = modules.find(m => m?.RGBA);
 
@@ -578,6 +743,7 @@ window.Spicetify = {
 					autoHideDuration: msTimeout
 				});
 			};
+
 			return;
 		}
 
@@ -598,15 +764,13 @@ window.Spicetify = {
 
 		// Search chunk in Spotify 1.2.13 or much older because it is impossible to find any distinguishing features
 		if (!imageAnalysis) {
-			let chunk = Object.entries(require.m).find(
+			let chunk = chunks.find(
 				([, value]) =>
 					(value.toString().match(/[\w$]+\.isFallback/g) || value.toString().includes("colorRaw:")) && value.toString().match(/.extractColor/g)
 			);
 			if (!chunk) {
 				await new Promise(resolve => setTimeout(resolve, 100));
-				chunk = Object.entries(require.m).find(
-					([, value]) => value.toString().match(/[\w$]+\.isFallback/g) && value.toString().match(/.extractColor/g)
-				);
+				chunk = chunks.find(([, value]) => value.toString().match(/[\w$]+\.isFallback/g) && value.toString().match(/.extractColor/g));
 			}
 			imageAnalysis = Object.values(require(chunk[0])).find(m => typeof m === "function");
 		}
@@ -711,6 +875,25 @@ window.Spicetify = {
 		// isSameIdentity
 		Spicetify.URI.isSameIdentity = URIModules.find(m => typeof m === "function" && m.toString().match(/[\w$]+\.id===[\w$]+\.id/));
 	})();
+
+	Spicetify.Events.webpackLoaded.fire();
+	refreshNavLinks?.();
+})();
+
+Spicetify.Events = (() => {
+	class Event {
+		callbacks = [];
+		on(callback) {
+			if (!this.callbacks) return void callback();
+			this.callbacks.push(callback);
+		}
+		fire() {
+			for (const callback of this.callbacks) callback();
+			this.callbacks = undefined;
+		}
+	}
+
+	return { webpackLoaded: new Event(), platformLoaded: new Event() };
 })();
 
 // Wait for Spicetify.Player.origin._state before adding following APIs
@@ -720,16 +903,17 @@ window.Spicetify = {
 		return;
 	}
 
+	const playerState = {
+		cache: null,
+		current: null
+	};
+
 	const interval = setInterval(() => {
 		if (!Spicetify.Player.origin._state?.item) return;
 		Spicetify.Player.data = Spicetify.Player.origin._state;
+		playerState.cache = Spicetify.Player.data;
 		clearInterval(interval);
 	}, 10);
-
-	const playerState = {
-		cache: Spicetify.Player.data,
-		current: null
-	};
 
 	Spicetify.Player.origin._events.addListener("update", ({ data: playerEventData }) => {
 		playerState.current = playerEventData.item ? playerEventData : null;
@@ -749,6 +933,23 @@ window.Spicetify = {
 
 		playerState.cache = playerState.current;
 	});
+
+	(function waitProductStateAPI() {
+		if (!Spicetify.Platform?.UserAPI) {
+			setTimeout(waitProductStateAPI, 100);
+			return;
+		}
+
+		const productState = Spicetify.Platform.UserAPI._product_state || Spicetify.Platform.UserAPI._product_state_service;
+		if (productState) return;
+		if (!Spicetify.Platform?.ProductStateAPI) {
+			setTimeout(waitProductStateAPI, 100);
+			return;
+		}
+
+		const productStateApi = Spicetify.Platform.ProductStateAPI.productStateApi;
+		Spicetify.Platform.UserAPI._product_state_service = productStateApi;
+	})();
 
 	setInterval(() => {
 		if (playerState.cache?.isPaused === false) {
@@ -773,11 +974,13 @@ Spicetify.getAudioData = async uri => {
 		throw "URI is invalid.";
 	}
 
-	return await Spicetify.CosmosAsync.get(`wg://audio-attributes/v1/audio-analysis/${uriObj.getBase62Id?.() ?? uriObj.id}?format=json`);
+	return await Spicetify.CosmosAsync.get(
+		`https://spclient.wg.spotify.com/audio-attributes/v1/audio-analysis/${uriObj.getBase62Id?.() ?? uriObj.id}?format=json`
+	);
 };
 
 Spicetify.colorExtractor = async uri => {
-	const body = await Spicetify.CosmosAsync.get(`wg://colorextractor/v1/extract-presets?uri=${uri}&format=json`);
+	const body = await Spicetify.CosmosAsync.get(`https://spclient.wg.spotify.com/colorextractor/v1/extract-presets?uri=${uri}&format=json`);
 
 	if (body.entries?.length) {
 		const list = {};
@@ -809,9 +1012,15 @@ Spicetify._getStyledClassName = (args, component) => {
 		"position",
 		"data-encore-id",
 		"$size",
-		"$iconColor"
+		"$iconColor",
+		"$variant",
+		"$semanticColor",
+		"$buttonSize",
+		"$position",
+		"$iconSize"
 	];
-	const customKeys = ["padding", "blocksize"];
+	const customKeys = ["blocksize"];
+	const customExactKeys = ["$padding", "$paddingBottom", "paddingBottom", "padding"];
 
 	const element = Array.from(args).find(
 		e =>
@@ -819,6 +1028,7 @@ Spicetify._getStyledClassName = (args, component) => {
 			e?.dangerouslySetInnerHTML ||
 			typeof e?.className !== "undefined" ||
 			includedKeys.some(key => typeof e?.[key] !== "undefined") ||
+			customExactKeys.some(key => typeof e?.[key] !== "undefined") ||
 			customKeys.some(key => Object.keys(e).some(k => k.toLowerCase().includes(key)))
 	);
 
@@ -832,13 +1042,14 @@ Spicetify._getStyledClassName = (args, component) => {
 		}
 	}
 
-	const excludedKeys = ["children", "className", "style", "dir", "key", "ref", "as", "$autoMirror", ""];
+	const excludedKeys = ["children", "className", "style", "dir", "key", "ref", "as", "$autoMirror", "$hasFocus", ""];
 	const excludedPrefix = ["aria-"];
 
-	const childrenProps = ["iconLeading", "iconTrailing", "iconOnly"];
+	const childrenProps = ["iconLeading", "iconTrailing", "iconOnly", "$iconOnly", "$iconLeading", "$iconTrailing"];
 
 	for (const key of childrenProps) {
-		if (element[key]) className += `-${key}`;
+		const sanitizedKey = key.startsWith("$") ? key.slice(1) : key;
+		if (element[key]) className += `-${sanitizedKey}`;
 	}
 
 	const booleanKeys = Object.keys(element).filter(key => typeof element[key] === "boolean" && element[key]);
@@ -846,15 +1057,18 @@ Spicetify._getStyledClassName = (args, component) => {
 	for (const key of booleanKeys) {
 		if (excludedKeys.includes(key)) continue;
 		if (excludedPrefix.some(prefix => key.startsWith(prefix))) continue;
-		className += `-${key}`;
+		const sanitizedKey = key.startsWith("$") ? key.slice(1) : key;
+		className += `-${sanitizedKey}`;
 	}
 
 	const customEntries = Object.entries(element).filter(
-		([key, value]) => customKeys.some(k => key.toLowerCase().includes(k)) && typeof value === "string" && value.length
+		([key, value]) =>
+			(customKeys.some(k => key.toLowerCase().includes(k)) || customExactKeys.some(k => key === k)) && typeof value === "string" && value.length
 	);
 
 	for (const [key, value] of customEntries) {
-		className += `-${key}_${value.replace(/[^a-z0-9]/gi, "_")}`;
+		const sanitizedKey = key.startsWith("$") ? key.slice(1) : key;
+		className += `-${sanitizedKey}_${value.replace(/[^a-z0-9]/gi, "_")}`;
 	}
 
 	return className;
@@ -862,7 +1076,7 @@ Spicetify._getStyledClassName = (args, component) => {
 
 Spicetify.getFontStyle = font => {
 	if (!font || !Spicetify._fontStyle) return;
-	let rawStyle = Spicetify._fontStyle({ variant: font })
+	let rawStyle = Spicetify._fontStyle({ variant: font, $variant: font })
 		.filter(style => typeof style === "string")
 		.join("");
 	// Clean up empty rulesets
@@ -1186,7 +1400,10 @@ Spicetify.SVGIcons = {
 	let subRequest;
 
 	// product_state was renamed to product_state_service in Spotify 1.2.21
-	const productState = Spicetify.Platform.UserAPI?._product_state || Spicetify.Platform.UserAPI?._product_state_service;
+	const productState =
+		Spicetify.Platform.UserAPI?._product_state ||
+		Spicetify.Platform.UserAPI?._product_state_service ||
+		Spicetify.Platform?.ProductStateAPI.productStateApi;
 
 	Spicetify.AppTitle = {
 		set: async name => {
@@ -1232,519 +1449,388 @@ Spicetify.SVGIcons = {
 	return document.head.appendChild(fontStyle);
 })();
 
-class _HTMLContextMenuItem extends HTMLLIElement {
-	constructor({ name, disabled = false, icon = undefined, trailingIcon = undefined, divider = false }) {
-		super();
-		this.name = name;
-		this.icon = icon;
-		this.trailingIcon = trailingIcon;
-		this.disabled = disabled;
-		this.divider = divider;
-		this.classList.add("main-contextMenu-menuItem");
+function parseIcon(icon, size = 16) {
+	if (icon && Spicetify.SVGIcons[icon]) {
+		return `<svg height="${size}" width="${size}" viewBox="0 0 ${size} ${size}" fill="currentColor">${Spicetify.SVGIcons[icon]}</svg>`;
 	}
-
-	render() {
-		const parseIcon = icon => {
-			if (icon && Spicetify.SVGIcons[icon]) {
-				return `<svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">${Spicetify.SVGIcons[icon]}</svg>`;
-			}
-			return icon || "";
-		};
-
-		this.innerHTML = `
-		<button class="main-contextMenu-menuItemButton ${this.disabled ? "main-contextMenu-disabled" : ""} ${
-			this.divider ? "main-contextMenu-dividerAfter" : ""
-		}">
-			${parseIcon(this.icon)}
-			<span class="ellipsis-one-line main-type-mesto main-contextMenu-menuItemLabel">${this.name}</span>
-			${parseIcon(this.trailingIcon)}
-		</button>`;
-	}
-
-	connectedCallback() {
-		if (!this.rendered) {
-			this.render();
-			this.rendered = true;
-		}
-	}
-
-	update(name, value) {
-		this[name] = value;
-		this.render();
-	}
+	return icon || "";
 }
 
-class _HTMLContextSubmenu extends HTMLDivElement {
-	constructor({ items = [], placement = "bottom-start" } = {}) {
-		super();
-		this.items = items;
-		this.placement = placement;
-		this.style.zIndex = "9999";
-		this.style.position = "absolute";
-		this.style.inset = "0px auto auto 0px";
-	}
-	render() {
-		this._tippy = {
-			unmount: () => {},
-			popperInstance: {
-				forceUpdate: () => {}
+function createIconComponent(icon, size = 16) {
+	return Spicetify.React.createElement(
+		Spicetify.ReactComponent.IconComponent,
+		{
+			iconSize: size,
+			dangerouslySetInnerHTML: {
+				__html: parseIcon(icon)
 			}
-		};
-
-		const list = document.createElement("ul");
-		list.classList.add("main-contextMenu-menu");
-		list.append(...this.items);
-		this.append(list);
-
-		const { y: parentY, width: parentWidth } = this.parentElement.getBoundingClientRect();
-		const { width: thisWidth, height: thisHeight } = this.getBoundingClientRect();
-		let x = 0;
-		let y = this.parentElement.offsetTop;
-
-		switch (this.placement) {
-			case "top-start":
-			case "bottom-start":
-				x += parentWidth - 5;
-				break;
-			default:
-				x -= thisWidth - 5;
-				break;
-		}
-		const realY = y + parentY;
-		if (realY + thisHeight > window.innerHeight) {
-			y -= realY + thisHeight - window.innerHeight;
-		}
-		this.style.transform = `translate(${x}px, ${y}px)`;
-	}
-
-	addItem(item) {
-		this.items.push(item);
-	}
-
-	connectedCallback() {
-		if (!this.rendered) {
-			this.render();
-			this.rendered = true;
-		}
-	}
+		},
+		null
+	);
 }
-customElements.define("context-menu-item", _HTMLContextMenuItem, { extends: "li" });
-customElements.define("context-submenu", _HTMLContextSubmenu, { extends: "div" });
 
-Spicetify.Menu = (() => {
-	const collection = new Set();
+Spicetify.ContextMenuV2 = (() => {
+	const registeredItems = new Map();
 
-	const _addItems = instance => {
-		const list = instance.querySelector("ul");
-		const elemList = [];
+	function parseProps(props) {
+		if (!props) return;
 
-		for (const item of collection) {
-			if (item._items?.size) {
-				const htmlSubmenu = new _HTMLContextSubmenu({
-					placement: instance.firstChild.dataset.placement
+		const uri = props.uri ?? props.item?.uri ?? props.reference?.uri;
+		const uris = props.uris ?? (uri ? [uri] : undefined);
+		if (!uris) return;
+
+		const uid = props.uid ?? props.item?.uid;
+		const uids = props.uids ?? (uid ? [uid] : undefined);
+
+		const contextUri = props.contextUri ?? props.context?.uri;
+
+		return [uris, uids, contextUri];
+	}
+
+	// these classes bridge the gap between react and js, insuring reactivity
+	class Item {
+		constructor({ children, disabled = false, leadingIcon, trailingIcon, divider, onClick, shouldAdd = () => true }) {
+			// maybe use a props object and a setProps
+			this.shouldAdd = shouldAdd;
+
+			this._children = children;
+			this._disabled = disabled;
+			this._leadingIcon = leadingIcon;
+			this._trailingIcon = trailingIcon;
+			this._divider = divider;
+
+			this._element = Spicetify.ReactJSX.jsx(() => {
+				const [_children, setChildren] = Spicetify.React.useState(this._children);
+				const [_disabled, setDisabled] = Spicetify.React.useState(this._disabled);
+				const [_leadingIcon, setLeadingIcon] = Spicetify.React.useState(this._leadingIcon);
+				const [_trailingIcon, setTrailingIcon] = Spicetify.React.useState(this._trailingIcon);
+				const [_divider, setDivider] = Spicetify.React.useState(this._divider);
+
+				Spicetify.React.useEffect(() => {
+					this._setChildren = setChildren;
+					this._setDisabled = setDisabled;
+					this._setIcon = setLeadingIcon;
+					this._setTrailingIcon = setTrailingIcon;
+					this._setDivider = setDivider;
+
+					return () => {
+						this._setChildren = undefined;
+						this._setDisabled = undefined;
+						this._setIcon = undefined;
+						this._setTrailingIcon = undefined;
+						this._setDivider = undefined;
+					};
 				});
 
-				for (const child of item._items) {
-					child._element.onclick = () => {
-						child.onClick();
-						htmlSubmenu.remove();
-						instance._tippy?.props?.onClickOutside();
-					};
-					htmlSubmenu.addItem(child._element);
-				}
+				const context = Spicetify.React.useContext(Spicetify.ContextMenuV2._context) ?? {};
 
-				item._element.onmouseenter = () => item._element.append(htmlSubmenu);
-				item._element.onmouseleave = () => htmlSubmenu.remove();
-				elemList.push(item._element);
-				continue;
-			}
-
-			item._element.onclick = () => {
-				item.onClick();
-				instance._tippy?.props?.onClickOutside();
-			};
-			elemList.push(item._element);
-		}
-		list.prepend(...elemList);
-	};
-
-	class Item {
-		constructor(name, isEnabled, onClick, icon = "") {
-			this._name = name;
-			this._isEnabled = isEnabled;
-			this._icon = icon;
-			this.onClick = () => {
-				onClick(this);
-			};
-			this._element = new _HTMLContextMenuItem({
-				name: name,
-				icon: icon,
-				trailingIcon: isEnabled ? "check" : ""
-			});
+				return Spicetify.React.createElement(Spicetify.ReactComponent.MenuItem, {
+					disabled: _disabled,
+					divider: _divider,
+					onClick: e => {
+						onClick(context, this, e);
+					},
+					leadingIcon: _leadingIcon && createIconComponent(_leadingIcon),
+					trailingIcon: _trailingIcon && createIconComponent(_trailingIcon),
+					children: _children
+				});
+			}, {});
 		}
 
-		setState(isEnabled) {
-			this._isEnabled = isEnabled;
-			this._element.update("trailingIcon", isEnabled ? "check" : "");
+		set children(children) {
+			this._children = children;
+			this._setChildren?.(this._children);
 		}
-		set isEnabled(bool) {
-			this.setState(bool);
-		}
-		get isEnabled() {
-			return this._isEnabled;
+		get children() {
+			return this._children;
 		}
 
-		setName(name) {
-			this._name = name;
-			this._element.update("name", name);
+		set disabled(bool) {
+			this._disabled = bool;
+			this._setDisabled?.(this._disabled);
 		}
-		set name(text) {
-			this.setName(text);
-		}
-		get name() {
-			return this._name;
+		get disabled() {
+			return this._disabled;
 		}
 
-		setIcon(icon) {
-			this._icon = icon;
-			this._element.update("icon", icon);
+		set leadingIcon(name) {
+			this._leadingIcon = name;
+			this._setIcon?.(this._leadingIcon);
 		}
-		set icon(icon) {
-			this.setIcon(icon);
-		}
-		get icon() {
-			return this._icon;
-		}
-
-		register() {
-			collection.add(this);
-		}
-		deregister() {
-			collection.delete(this);
-		}
-	}
-
-	class SubMenu {
-		constructor(name, items, icon, trailingIcon) {
-			this._name = name;
-			this._items = new Set(items);
-			this._icon = icon;
-			this._trailingIcon = trailingIcon;
-			this._element = new _HTMLContextMenuItem({
-				name: name,
-				icon: icon,
-				trailingIcon:
-					trailingIcon ||
-					'<span><svg role="img" height="16" width="16" fill="currentColor" class="main-contextMenu-subMenuIcon" viewBox="0 0 16 16"><path d="M14 10 8 4l-6 6h12z"></path></svg></span>'
-			});
-		}
-
-		setName(name) {
-			this._name = name;
-			this._element.update("name", name);
-		}
-		set name(text) {
-			this.setName(text);
-		}
-		get name() {
-			return this._name;
-		}
-
-		addItem(item) {
-			this._items.add(item);
-		}
-		removeItem(item) {
-			this._items.delete(item);
-		}
-
-		setIcon(icon) {
-			this._icon = icon;
-			this._element.update("icon", icon);
-		}
-		set icon(icon) {
-			this.setIcon(icon);
-		}
-		get icon() {
-			return this._icon;
-		}
-
-		setTrailingIcon(trailingIcon) {
-			this._trailingIcon = trailingIcon;
-			this._element.update("trailingIcon", trailingIcon);
-		}
-		set trailingIcon(trailingIcon) {
-			this.setTrailingIcon(trailingIcon);
-		}
-		get trailingIcon() {
-			return this._trailingIcon;
-		}
-
-		register() {
-			collection.add(this);
-		}
-		deregister() {
-			collection.delete(this);
-		}
-	}
-
-	return { Item, SubMenu, _addItems };
-})();
-
-Spicetify.ContextMenu = (() => {
-	const itemList = new Set();
-	const iconList = Object.keys(Spicetify.SVGIcons);
-
-	class Item {
-		constructor(name, onClick, shouldAdd = uris => true, icon = "", trailingIcon = "", disabled = false) {
-			this.onClick = onClick;
-			this.shouldAdd = shouldAdd;
-			this._name = name;
-			this._icon = icon;
-			this._trailingIcon = trailingIcon;
-			this._disabled = disabled;
-			this._element = new _HTMLContextMenuItem({
-				name: name,
-				icon: icon,
-				trailingIcon: trailingIcon,
-				disabled: disabled
-			});
-		}
-		set name(text) {
-			this._name = text;
-			this._element.update("name", text);
-		}
-		get name() {
-			return this._name;
-		}
-
-		set icon(name) {
-			this._icon = name;
-			this._element.update("icon", name);
-		}
-		get icon() {
-			return this._icon;
+		get leadingIcon() {
+			return this._leadingIcon;
 		}
 
 		set trailingIcon(name) {
 			this._trailingIcon = name;
-			this._element.update("trailingIcon", name);
+			this._setTrailingIcon?.(this._trailingIcon);
 		}
 		get trailingIcon() {
 			return this._trailingIcon;
 		}
 
+		set divider(divider) {
+			this._divider = divider;
+			this._setDivider?.(this._divider);
+		}
+		get divider() {
+			return this._divider;
+		}
+
+		register() {
+			Spicetify.ContextMenuV2.registerItem(this._element, this.shouldAdd);
+		}
+		deregister() {
+			Spicetify.ContextMenuV2.unregisterItem(this._element);
+		}
+	}
+
+	class ItemSubMenu {
+		static itemsToComponents = items => items.map(item => item._element);
+
+		constructor({ text, disabled = false, leadingIcon, divider, items, shouldAdd = () => true }) {
+			this.shouldAdd = shouldAdd;
+
+			this._text = text;
+			this._disabled = disabled;
+			this._leadingIcon = leadingIcon;
+			this._items = items;
+			this._element = Spicetify.ReactJSX.jsx(() => {
+				const [_text, setText] = Spicetify.React.useState(this._text);
+				const [_disabled, setDisabled] = Spicetify.React.useState(this._disabled);
+				const [_leadingIcon, setLeadingIcon] = Spicetify.React.useState(this._leadingIcon);
+				const [_divider, setDivider] = Spicetify.React.useState(this._divider);
+				const [_items, setItems] = Spicetify.React.useState(this._items);
+
+				Spicetify.React.useEffect(() => {
+					this._setText = setText;
+					this._setDisabled = setDisabled;
+					this._setLeadingIcon = setLeadingIcon;
+					this._setDivider = setDivider;
+					this._setItems = setItems;
+					return () => {
+						this._setText = undefined;
+						this._setDisabled = undefined;
+						this._setLeadingIcon = undefined;
+						this._setDivider = undefined;
+						this._setItems = undefined;
+					};
+				});
+
+				return Spicetify.React.createElement(Spicetify.ReactComponent.MenuSubMenuItem, {
+					displayText: _text,
+					divider: _divider,
+					depth: 1,
+					placement: "right-start",
+					onOpenChange: () => undefined,
+					onClick: () => undefined,
+					disabled: _disabled,
+					leadingIcon: _leadingIcon && createIconComponent(_leadingIcon),
+					children: ItemSubMenu.itemsToComponents(_items)
+				});
+			}, {});
+		}
+
+		set text(text) {
+			this._text = text;
+			this._setText?.(this._text);
+		}
+		get text() {
+			return this._text;
+		}
+
 		set disabled(bool) {
 			this._disabled = bool;
-			this._element.update("disabled", bool);
+			this._setDisabled?.(this._disabled);
 		}
 		get disabled() {
 			return this._disabled;
 		}
 
-		register() {
-			itemList.add(this);
+		set leadingIcon(name) {
+			this._leadingIcon = name;
+			this._setIcon?.(this._leadingIcon);
 		}
-		deregister() {
-			itemList.delete(this);
+		get leadingIcon() {
+			return this._leadingIcon;
 		}
-	}
 
-	Item.iconList = iconList;
-
-	class SubMenu {
-		constructor(name, items, shouldAdd = uris => true, disabled = false, icon = "", trailingIcon = "") {
-			this._items = new Set(items);
-			this.shouldAdd = shouldAdd;
-			this._name = name;
-			this._disabled = disabled;
-			this._icon = icon;
-			this._trailingIcon = trailingIcon;
-			this._element = new _HTMLContextMenuItem({
-				name: name,
-				icon: icon,
-				trailingIcon:
-					trailingIcon ||
-					'<span><svg role="img" height="16" width="16" fill="currentColor" class="main-contextMenu-subMenuIcon" viewBox="0 0 16 16"><path d="M14 10 8 4l-6 6h12z"></path></svg></span>',
-				disabled: disabled
-			});
+		set divider(divider) {
+			this._divider = divider;
+			this._setDivider?.(this._divider);
 		}
-		set name(text) {
-			this._name = text;
-			this._element.update("name", text);
-		}
-		get name() {
-			return this._name;
+		get divider() {
+			return this._divider;
 		}
 
 		addItem(item) {
 			this._items.add(item);
+			this._setItems?.(this._items);
 		}
 		removeItem(item) {
 			this._items.delete(item);
-		}
-
-		set disabled(bool) {
-			this._disabled = bool;
-			this._element.update("disabled", bool);
-			if (this._submenuElement) {
-				if (!bool) {
-					this._element.onmouseenter = () => this._element.append(this._submenuElement);
-					this._element.onmouseleave = () => this._submenuElement.remove();
-				} else {
-					this._element.onmouseenter = this._element.onmouseleave = undefined;
-				}
-			}
-		}
-		get disabled() {
-			return this._disabled;
+			this._setItems?.(this._items);
 		}
 
 		register() {
-			itemList.add(this);
+			registerItem(this._element, this.shouldAdd);
 		}
 		deregister() {
-			itemList.delete(this);
+			unregisterItem(this._element);
 		}
 	}
 
-	SubMenu.iconList = iconList;
-
-	function _addItemsRecursive(instance, currentItem, uris, uids, contextUri) {
-		if (currentItem._items?.size) {
-			const htmlSubmenu = new _HTMLContextSubmenu({
-				placement: instance.firstChild.dataset.placement
-			});
-
-			for (const child of currentItem._items) {
-				try {
-					if (!child.shouldAdd(uris, uids, contextUri)) continue;
-				} catch (e) {
-					console.error(e);
-					continue;
-				}
-
-				child._element.onclick = () => {
-					if (!child._disabled) {
-						child.onClick(uris, uids, contextUri);
-						htmlSubmenu.remove();
-						instance._tippy?.props?.onClickOutside();
-					}
-				};
-				htmlSubmenu.addItem(child._element);
-
-				_addItemsRecursive(instance, child, uris, uids, contextUri);
-			}
-
-			currentItem._submenuElement = htmlSubmenu;
-			currentItem.disabled = currentItem._disabled;
-		}
+	function registerItem(item, shouldAdd = () => true) {
+		registeredItems.set(item, shouldAdd);
 	}
 
-	function _addItems(instance) {
-		const list = instance.querySelector("ul");
-		const container = instance.firstChild;
-		const reactEH = Object.values(container)[1];
-		let props = reactEH?.children?.props;
-		if (!props) {
-			// v1.1.56
-			reactII = Object.values(container)[0];
-			props = reactII.pendingProps.children.props;
-		}
-
-		let uris = [];
-		let uids;
-		let contextUri;
-		if (props.uris) {
-			uris = props.uris;
-		} else if (props.uri) {
-			uris = [props.uri];
-		} else if (props.item?.uri) {
-			uris = [props.item.uri];
-		} else if (props.reference?.uri) {
-			uris = [props.reference.uri];
-		} else {
-			return;
-		}
-		if (props.uids) {
-			uids = props.uids;
-		} else if (props.uid) {
-			uids = [props.uid];
-		} else if (props.item?.uid) {
-			uids = [props.item.uid];
-		}
-
-		if (props.contextUri) {
-			contextUri = props?.contextUri;
-		} else if (props.context?.uri) {
-			contextUri = props.context.uri;
-		}
-
-		const elemList = [];
-		for (const item of itemList) {
-			try {
-				if (!item.shouldAdd(uris, uids, contextUri)) continue;
-			} catch (e) {
-				console.error(e);
-				continue;
-			}
-
-			if (item._items?.size) {
-				_addItemsRecursive(instance, item, uris, uids, contextUri);
-				elemList.push(item._element);
-				continue;
-			}
-
-			item._element.onclick = () => {
-				if (!item._disabled) {
-					item.onClick(uris, uids, contextUri);
-					instance._tippy?.props?.onClickOutside();
-				}
-			};
-
-			elemList.push(item._element);
-		}
-		list.prepend(...elemList);
+	function unregisterItem(item) {
+		registeredItems.delete(item);
 	}
 
-	return { Item, SubMenu, _addItems };
+	const renderItems = () => {
+		const { props, trigger, target } = Spicetify.React.useContext(Spicetify.ContextMenuV2._context) ?? {};
+
+		return Array.from(registeredItems.entries())
+			.map(([item, shouldAdd]) => shouldAdd?.(props, trigger, target) && item)
+			.filter(Boolean);
+	};
+
+	return { parseProps, Item, ItemSubMenu, registerItem, unregisterItem, renderItems };
 })();
 
-Spicetify._cloneSidebarItem = (list, isLibX = false) => {
-	function findChild(parent, key, value) {
-		if (!parent.props) {
-			return null;
+Spicetify.Menu = (() => {
+	const shouldAdd = (_, trigger, target) =>
+		trigger === "click" && (target.classList.contains("main-userWidget-boxCondensed") || target.classList.contains("main-userWidget-box"));
+
+	class Item extends Spicetify.ContextMenuV2.Item {
+		constructor(children, isEnabled, onClick, leadingIcon) {
+			super({ children, leadingIcon, onClick: (_, self) => onClick(self), shouldAdd });
+
+			this.isEnabled = isEnabled;
 		}
 
-		if (value && parent.props[key]?.includes(value)) {
-			return parent;
+		setState(state) {
+			this.isEnabled = state;
 		}
-		if (!parent.props.children) {
-			return null;
+
+		set isEnabled(bool) {
+			this._isEnabled = bool;
+			this.trailingIcon = this.isEnabled ? "check" : "";
 		}
-		if (Array.isArray(parent.props.children)) {
-			for (const child of parent.props.children) {
-				const ele = findChild(child, key, value);
-				if (ele) {
-					return ele;
+		get isEnabled() {
+			return this._isEnabled;
+		}
+	}
+
+	class SubMenu extends Spicetify.ContextMenuV2.ItemSubMenu {
+		constructor(text, items, leadingIcon) {
+			super({ text, leadingIcon, items, shouldAdd });
+		}
+
+		set name(text) {
+			this.text = text;
+		}
+		get name() {
+			return this.text;
+		}
+
+		set icon(icon) {
+			this.leadingIcon = icon;
+		}
+		get icon() {
+			return this.leadingIcon;
+		}
+	}
+
+	return { Item, SubMenu };
+})();
+
+Spicetify.ContextMenu = (() => {
+	const iconList = Object.keys(Spicetify.SVGIcons);
+
+	class Item extends Spicetify.ContextMenuV2.Item {
+		static iconList = iconList;
+
+		constructor(name, onClick, shouldAdd = () => true, icon = undefined, trailingIcon = undefined, disabled = false) {
+			super({
+				children: name,
+				disabled,
+				leadingIcon: icon,
+				trailingIcon,
+				onClick: context => {
+					const [uris, uids, contextUri] = Spicetify.ContextMenuV2.parseProps(context.props);
+					onClick(uris, uids, contextUri);
+				},
+				shouldAdd: props => {
+					const parsedProps = Spicetify.ContextMenuV2.parseProps(props);
+					return parsedProps && shouldAdd(...parsedProps);
 				}
-			}
-		} else if (parent.props.children) {
-			return findChild(parent.props.children, key, value);
-		}
-		return null;
-	}
-
-	function conditionalAppend(baseClassname, activeClassname, location) {
-		if (Spicetify.Platform?.History?.location?.pathname.startsWith(location)) {
-			return `${baseClassname} ${activeClassname}`;
+			});
 		}
 
-		return baseClassname;
+		set name(name) {
+			this.children = name;
+		}
+		get name() {
+			return this.children;
+		}
+
+		set icon(name) {
+			this.leadingIcon = name;
+		}
+		get icon() {
+			return this.leadingIcon;
+		}
 	}
 
-	const React = Spicetify.React;
-	const reactObjs = [];
-	const sidebarIsCollapsed = Spicetify.Platform?.LocalStorageAPI?.getItem?.("ylx-sidebar-state") === 1;
+	class SubMenu extends Spicetify.ContextMenuV2.ItemSubMenu {
+		static iconList = iconList;
+
+		constructor(name, items, shouldAdd, disabled = false, icon = undefined) {
+			super({
+				text: name,
+				disabled,
+				leadingIcon: icon,
+				items,
+				shouldAdd: props => {
+					const parsedProps = Spicetify.ContextMenuV2.parseProps(props);
+					return parsedProps && shouldAdd(...parsedProps);
+				}
+			});
+		}
+
+		set name(name) {
+			this.text = name;
+		}
+		get name() {
+			return this.text;
+		}
+	}
+
+	return { Item, SubMenu };
+})();
+
+let navLinkFactoryCtx = null;
+let refreshNavLinks = null;
+
+Spicetify._renderNavLinks = (list, isTouchScreenUi, isPreLibX = false) => {
+	const [refreshCount, refresh] = Spicetify.React.useReducer(x => x + 1, 0);
+	refreshNavLinks = refresh;
+
+	if (
+		!Spicetify.ReactComponent.ButtonTertiary ||
+		!Spicetify.ReactComponent.Navigation ||
+		!Spicetify.ReactComponent.TooltipWrapper ||
+		!Spicetify.Platform.History ||
+		!Spicetify.Platform.LocalStorageAPI
+	)
+		return;
+
+	const navLinkFactory = isTouchScreenUi ? NavLinkGlobal : isPreLibX ? NavLinkSidebarLegacy : NavLinkSidebar;
+
+	if (!navLinkFactoryCtx) navLinkFactoryCtx = Spicetify.React.createContext(null);
+	const registered = [];
 
 	for (const app of list) {
 		let manifest;
@@ -1766,90 +1852,127 @@ Spicetify._cloneSidebarItem = (list, isLibX = false) => {
 		}
 		const icon = manifest.icon || "";
 		const activeIcon = manifest["active-icon"] || icon;
-
-		const appLink = `/${app}`;
-		let obj;
-		let link;
-
-		if (isLibX) {
-			link = findChild(Spicetify._sidebarXItemToClone, "className", "main-yourLibraryX-navLink");
-			obj = React.cloneElement(
-				Spicetify._sidebarXItemToClone,
-				null,
-				React.cloneElement(
-					Spicetify._sidebarXItemToClone.props.children,
-					{
-						label: sidebarIsCollapsed ? appProper : ""
-					},
-					React.cloneElement(
-						link,
-						{
-							to: appLink,
-							isActive: (e, { pathname: t }) => t.startsWith(appLink),
-							className: conditionalAppend("link-subtle main-yourLibraryX-navLink", "main-yourLibraryX-navLinkActive", appLink)
-						},
-						React.createElement(Spicetify.ReactComponent.IconComponent, {
-							className: "home-icon",
-							iconSize: "24",
-							dangerouslySetInnerHTML: {
-								__html: icon
-							}
-						}),
-						React.createElement(Spicetify.ReactComponent.IconComponent, {
-							className: "home-active-icon",
-							iconSize: "24",
-							dangerouslySetInnerHTML: {
-								__html: activeIcon
-							}
-						}),
-						!sidebarIsCollapsed &&
-							React.createElement(
-								Spicetify.ReactComponent.TextComponent,
-								{
-									variant: "balladBold"
-								},
-								appProper
-							)
-					)
-				)
-			);
-		} else {
-			link = findChild(Spicetify._sidebarItemToClone, "className", "main-navBar-navBarLink");
-			obj = React.cloneElement(
-				Spicetify._sidebarItemToClone,
-				null,
-				React.cloneElement(
-					link,
-					{
-						to: appLink,
-						isActive: (e, { pathname: t }) => t.startsWith(appLink),
-						className: conditionalAppend("link-subtle main-navBar-navBarLink", "main-navBar-navBarLinkActive", appLink)
-					},
-					React.createElement("div", {
-						className: "icon collection-icon",
-						dangerouslySetInnerHTML: {
-							__html: icon
-						}
-					}),
-					React.createElement("div", {
-						className: "icon collection-active-icon",
-						dangerouslySetInnerHTML: {
-							__html: activeIcon
-						}
-					}),
-					React.createElement(
-						"span",
-						{
-							className: "ellipsis-one-line main-type-mestoBold"
-						},
-						appProper
-					)
-				)
-			);
-		}
-		reactObjs.push(obj);
+		const appRoutePath = `/${app}`;
+		registered.push({ appProper, appRoutePath, icon, activeIcon });
 	}
-	return reactObjs;
+
+	const style = document.createElement("style");
+	style.innerHTML = `
+:root {
+  --max-custom-navlink-count: 4;
+}
+
+.custom-navlinks-scrollable_container {
+  max-width: calc(48px * var(--max-custom-navlink-count) + 8px * (var(--max-custom-navlink-count) - 1));
+  -webkit-app-region: no-drag;
+}
+
+.custom-navlinks-scrollable_container div[role="presentation"] > *:not(:last-child) {
+  margin-inline-end: 8px;
+}
+
+.custom-navlinks-scrollable_container div[role="presentation"] {
+	display: flex;
+	flex-direction: row;
+}
+
+.custom-navlink {
+  -webkit-app-region: unset;
+}
+	`;
+	document.head.appendChild(style);
+
+	const wrapScrollableContainer = element =>
+		Spicetify.React.createElement(
+			"div",
+			{ className: "custom-navlinks-scrollable_container" },
+			Spicetify.React.createElement(Spicetify.ReactComponent.ScrollableContainer, null, element)
+		);
+
+	const NavLinks = () =>
+		Spicetify.React.createElement(
+			navLinkFactoryCtx.Provider,
+			{ value: navLinkFactory },
+			registered.map(NavLinkElement => Spicetify.React.createElement(NavLink, NavLinkElement, null))
+		);
+
+	return isTouchScreenUi ? wrapScrollableContainer(NavLinks()) : NavLinks();
+};
+
+const NavLink = ({ appProper, appRoutePath, icon, activeIcon }) => {
+	const isActive = Spicetify.Platform.History.location.pathname?.startsWith(appRoutePath);
+	const createIcon = () => createIconComponent(isActive ? activeIcon : icon, 24);
+
+	const NavLinkFactory = Spicetify.React.useContext(navLinkFactoryCtx);
+
+	return NavLinkFactory && Spicetify.React.createElement(NavLinkFactory, { appProper, appRoutePath, createIcon, isActive }, null);
+};
+
+const NavLinkSidebarLegacy = ({ appProper, appRoutePath, createIcon, isActive }) => {
+	return Spicetify.React.createElement(
+		"li",
+		{ className: "main-navBar-navBarItem InvalidDropTarget" },
+		Spicetify.React.createElement(
+			Spicetify.ReactComponent.TooltipWrapper,
+			{ label: appProper, placement: "right" },
+			Spicetify.React.createElement(
+				Spicetify.ReactComponent.Navigation,
+				{
+					to: appRoutePath,
+					referrer: "other",
+					className: Spicetify.classnames("link-subtle", "main-navBar-navBarLink", {
+						"main-navBar-navBarLinkActive active": isActive
+					}),
+					onClick: () => undefined,
+					"aria-label": appProper
+				},
+				createIcon(),
+				Spicetify.React.createElement(Spicetify.ReactComponent.TextComponent, { variant: "mestoBold" }, appProper)
+			)
+		)
+	);
+};
+
+const NavLinkSidebar = ({ appProper, appRoutePath, createIcon, isActive }) => {
+	const isSidebarCollapsed = Spicetify.Platform.LocalStorageAPI.getItem("ylx-sidebar-state") === 1;
+
+	return Spicetify.React.createElement(
+		"li",
+		{ className: "main-yourLibraryX-navItem InvalidDropTarget" },
+		Spicetify.React.createElement(
+			Spicetify.ReactComponent.TooltipWrapper,
+			{ label: isSidebarCollapsed ? appProper : null, disabled: !isSidebarCollapsed, placement: "right" },
+			Spicetify.React.createElement(
+				Spicetify.ReactComponent.Navigation,
+				{
+					to: appRoutePath,
+					referrer: "other",
+					className: Spicetify.classnames("link-subtle", "main-yourLibraryX-navLink", {
+						"main-yourLibraryX-navLinkActive": isActive
+					}),
+					onClick: () => undefined,
+					"aria-label": appProper
+				},
+				createIcon(),
+				!isSidebarCollapsed && Spicetify.React.createElement(Spicetify.ReactComponent.TextComponent, { variant: "balladBold" }, appProper)
+			)
+		)
+	);
+};
+
+const NavLinkGlobal = ({ appProper, appRoutePath, createIcon, isActive }) => {
+	return Spicetify.React.createElement(
+		Spicetify.ReactComponent.TooltipWrapper,
+		{ label: appProper },
+		Spicetify.React.createElement(Spicetify.ReactComponent.ButtonTertiary, {
+			iconOnly: createIcon,
+			className: Spicetify.classnames("link-subtle", "main-globalNav-navLink", "main-globalNav-link-icon", "custom-navlink", {
+				"main-globalNav-navLinkActive": isActive
+			}),
+			"aria-label": appProper,
+			onClick: () => Spicetify.Platform.History.push(appRoutePath)
+		})
+	);
 };
 
 class _HTMLGenericModal extends HTMLElement {
@@ -1860,17 +1983,17 @@ class _HTMLGenericModal extends HTMLElement {
 	display({ title, content, isLarge = false }) {
 		this.innerHTML = `
 <div class="GenericModal__overlay" style="z-index: 100;">
-    <div class="GenericModal" tabindex="-1" role="dialog" aria-label="${title}" aria-modal="true">
-        <div class="${isLarge ? "main-embedWidgetGenerator-container" : "main-trackCreditsModal-container"}">
-            <div class="main-trackCreditsModal-header">
-                <h1 class="main-type-alto" as="h1">${title}</h1>
-                <button aria-label="Close" class="main-trackCreditsModal-closeBtn"><svg width="18" height="18" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><title>Close</title><path d="M31.098 29.794L16.955 15.65 31.097 1.51 29.683.093 15.54 14.237 1.4.094-.016 1.508 14.126 15.65-.016 29.795l1.414 1.414L15.54 17.065l14.144 14.143" fill="currentColor" fill-rule="evenodd"></path></svg></button>
-            </div>
-            <div class="main-trackCreditsModal-mainSection">
-                <main class="main-trackCreditsModal-originalCredits"></main>
-            </div>
-        </div>
-    </div>
+	<div class="GenericModal" tabindex="-1" role="dialog" aria-label="${title}" aria-modal="true">
+		<div class="${isLarge ? "main-embedWidgetGenerator-container" : "main-trackCreditsModal-container"}">
+			<div class="main-trackCreditsModal-header">
+				<h1 class="main-type-alto" as="h1">${title}</h1>
+				<button aria-label="Close" class="main-trackCreditsModal-closeBtn"><svg width="18" height="18" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><title>Close</title><path d="M31.098 29.794L16.955 15.65 31.097 1.51 29.683.093 15.54 14.237 1.4.094-.016 1.508 14.126 15.65-.016 29.795l1.414 1.414L15.54 17.065l14.144 14.143" fill="currentColor" fill-rule="evenodd"></path></svg></button>
+			</div>
+			<div class="main-trackCreditsModal-mainSection">
+				<main class="main-trackCreditsModal-originalCredits"></main>
+			</div>
+		</div>
+	</div>
 </div>`;
 
 		this.querySelector("button").onclick = this.hide.bind(this);
@@ -1943,10 +2066,12 @@ Spicetify.Topbar = (() => {
 	let rightContainer;
 	const leftButtonsStash = new Set();
 	const rightButtonsStash = new Set();
+	const generatedClassName = "Button-medium-medium-buttonTertiary-iconOnly-condensed-disabled-isUsingKeyboard-useBrowserDefaultFocusStyle";
 
 	class Button {
 		constructor(label, icon, onClick, disabled = false, isRight = false) {
-			this.element = document.createElement("button");
+			this.element = document.createElement("div");
+			this.button = document.createElement("button");
 			this.icon = icon;
 			this.onClick = onClick;
 			this.disabled = disabled;
@@ -1956,12 +2081,20 @@ Spicetify.Topbar = (() => {
 			});
 			this.label = label;
 
+			this.element.appendChild(this.button);
+			const globalHistoryButtons = document.querySelector(".main-globalNav-historyButtons");
 			if (isRight) {
-				this.element.classList.add("encore-over-media-set", "main-topBar-buddyFeed");
+				this.button.classList.add("encore-over-media-set", "main-topBar-buddyFeed");
+				if (globalHistoryButtons) this.button.classList.add("main-globalNav-buddyFeed");
+
 				rightButtonsStash.add(this.element);
-				rightContainer?.after(this.element);
+				rightContainer?.prepend(this.element);
 			} else {
-				this.element.classList.add("main-topBar-button");
+				this.button.classList.add("main-topBar-button");
+				if (globalHistoryButtons) {
+					this.button.classList.add("main-globalNav-icon", generatedClassName);
+				}
+
 				leftButtonsStash.add(this.element);
 				leftContainer?.append(this.element);
 			}
@@ -1971,7 +2104,8 @@ Spicetify.Topbar = (() => {
 		}
 		set label(text) {
 			this._label = text;
-			if (!this.tippy) this.element.setAttribute("title", text);
+			this.button.setAttribute("aria-label", text);
+			if (!this.tippy) this.button.setAttribute("title", text);
 			else this.tippy.setContent(text);
 		}
 		get icon() {
@@ -1983,34 +2117,64 @@ Spicetify.Topbar = (() => {
 				newInput = `<svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">${Spicetify.SVGIcons[newInput]}</svg>`;
 			}
 			this._icon = newInput;
-			this.element.innerHTML = newInput;
+			this.button.innerHTML = newInput;
 		}
 		get onClick() {
 			return this._onClick;
 		}
 		set onClick(func) {
 			this._onClick = func;
-			this.element.onclick = () => this._onClick(this);
+			this.button.onclick = () => this._onClick(this);
 		}
 		get disabled() {
 			return this._disabled;
 		}
 		set disabled(bool) {
 			this._disabled = bool;
-			this.element.disabled = bool;
-			this.element.classList.toggle("disabled", bool);
+			this.button.disabled = bool;
+			this.button.classList.toggle("disabled", bool);
 		}
 	}
 
-	(function waitForTopbarMounted() {
-		leftContainer = document.querySelector(".main-topBar-historyButtons");
-		rightContainer = document.querySelector(".main-noConnection");
+	function waitForTopbarMounted() {
+		const globalHistoryButtons = document.querySelector(".main-globalNav-historyButtons");
+		leftContainer = document.querySelector(".main-topBar-historyButtons") ?? globalHistoryButtons;
+		rightContainer = document.querySelector(".main-actionButtons");
 		if (!leftContainer || !rightContainer) {
-			setTimeout(waitForTopbarMounted, 300);
+			setTimeout(waitForTopbarMounted, 100);
 			return;
 		}
+
+		if (globalHistoryButtons) globalHistoryButtons.style = "gap: 4px; padding-inline: 4px 4px";
+		for (const button of leftButtonsStash) {
+			if (button.parentNode) button.parentNode.removeChild(button);
+
+			const buttonElement = button.querySelector("button");
+			if (globalHistoryButtons) {
+				buttonElement.classList.add("main-globalNav-icon", generatedClassName);
+			} else {
+				buttonElement.classList.remove("main-globalNav-icon", generatedClassName);
+			}
+		}
 		leftContainer.append(...leftButtonsStash);
-		rightContainer.after(...rightButtonsStash);
+		for (const button of rightButtonsStash) {
+			if (button.parentNode) button.parentNode.removeChild(button);
+
+			const buttonElement = button.querySelector("button");
+			if (globalHistoryButtons) buttonElement.classList.add("main-globalNav-buddyFeed");
+			else buttonElement.classList.remove("main-globalNav-buddyFeed");
+		}
+		rightContainer.prepend(...rightButtonsStash);
+	}
+
+	waitForTopbarMounted();
+	(function waitForPlatform() {
+		if (!Spicetify.Platform?.History) {
+			setTimeout(waitForPlatform, 100);
+			return;
+		}
+
+		Spicetify.Platform.History.listen(() => waitForTopbarMounted());
 	})();
 
 	return { Button };
@@ -2216,179 +2380,6 @@ Spicetify.Playbar = (() => {
 	return { Button, Widget };
 })();
 
-// TODO: Remove this with v3 release
-(function waitForPanelAPI() {
-	if (!Spicetify.Platform?.PanelAPI || !Spicetify.React || !Spicetify._reservedPanelIds) {
-		setTimeout(waitForPanelAPI, 300);
-		return;
-	}
-
-	// Workaround for older versions
-	let currentPanelId = 0;
-	let fallback = false;
-	let refreshTimeout;
-	let init = true;
-
-	if (!Spicetify.Platform.PanelAPI.getLastCachedPanelState) {
-		fallback = true;
-		Spicetify.Platform.PanelAPI.subscribeToPanelState(panelId => {
-			currentPanelId = panelId;
-		});
-	}
-
-	const contentMap = new Map(
-		Object.entries(Spicetify._reservedPanelIds)
-			.map(([key, value]) => !Number.isNaN(parseInt(key)) && [parseInt(key), value])
-			.filter(Boolean)
-	);
-
-	// https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary
-	class ErrorBoundary extends Spicetify.React.Component {
-		constructor(props) {
-			super(props);
-			this.state = { hasError: false };
-		}
-
-		static getDerivedStateFromError() {
-			// Update state so the next render will show the fallback UI.
-			return { hasError: true };
-		}
-
-		componentDidCatch(error, info) {
-			const extension =
-				Spicetify.Config.extensions.find(ext => error.stack.includes(ext)) ||
-				Spicetify.Config.custom_apps.find(app => error.stack.includes(`spicetify-routes-${app}`));
-
-			Spicetify.showNotification(
-				`Something went wrong in panel ID "${this.props.id}" ${extension ? `of "${extension}"` : ""}, check Console for error log`,
-				true
-			);
-			console.error(error);
-			console.error(`Error stack in panel ID "${this.props.id}": ${info.componentStack}`);
-			Spicetify.Panel.setPanel(Spicetify.Panel.reservedPanelIds.Disabled);
-		}
-
-		render() {
-			if (this.state.hasError) {
-				// `false` not `null`, so it won’t render beyond the null coalescing operator.
-				return false;
-			}
-
-			// Pass the `panel` prop with the current panel ID to the children
-			return Spicetify.React.cloneElement(this.props.children, { panel: this.props.id });
-		}
-	}
-
-	Spicetify.Panel = {
-		reservedPanelIds: Spicetify._reservedPanelIds,
-		Components: {
-			PanelSkeleton: Spicetify.ReactComponent.PanelSkeleton,
-			PanelContent: Spicetify.ReactComponent.PanelContent,
-			PanelHeader: Spicetify.ReactComponent.PanelHeader
-		},
-		hasPanel: (id, _internal) => {
-			// Render is sometimes ran before the wrapper is initialized, so we need to refresh it
-			// For some reason it doesn't trigger listeners
-			if (_internal && init) {
-				clearTimeout(refreshTimeout);
-				refreshTimeout = setTimeout(() => {
-					Spicetify.Panel.setPanel(id);
-					init = false;
-				}, 100);
-			}
-			return contentMap.has(id);
-		},
-		getPanel: id => contentMap.get(id),
-		render: () => {
-			const { currentPanel } = Spicetify.Panel;
-			return (!Spicetify.Panel.reservedPanelIds[currentPanel] && contentMap.get(Spicetify.Panel.currentPanel)) || null;
-		},
-		get currentPanel() {
-			return fallback ? currentPanelId : Spicetify.Platform.PanelAPI.getLastCachedPanelState();
-		},
-		setPanel: async id => {
-			currentPanelId = id;
-			await Spicetify.Platform.PanelAPI.setPanelState(id);
-		},
-		subPanelState: callback => Spicetify.Platform.PanelAPI.subscribeToPanelState(callback),
-		registerPanel: ({
-			label,
-			children,
-			isCustom = false,
-			style,
-			wrapperClassname,
-			headerClassname,
-			headerVariant,
-			headerSemanticColor,
-			headerLink,
-			headerActions,
-			headerOnClose,
-			headerPreventDefaultClose,
-			headerOnBack
-		}) => {
-			const id = [...contentMap.keys()].sort((a, b) => a - b).pop() + 1;
-			const content = isCustom
-				? children
-				: Spicetify.React.createElement(
-						Spicetify.ReactComponent.PanelSkeleton,
-						{
-							label,
-							// Backwards compatibility, no longer needed in Spotify 1.2.12
-							className: "Root__right-sidebar",
-							style
-						},
-						Spicetify.React.createElement(
-							Spicetify.ReactComponent.PanelContent,
-							{
-								className: wrapperClassname
-							},
-							Spicetify.React.createElement(Spicetify.ReactComponent.PanelHeader, {
-								title: label,
-								panel: id,
-								link: headerLink,
-								actions: headerActions,
-								onClose: headerOnClose,
-								onBack: headerOnBack,
-								preventDefaultClose: headerPreventDefaultClose,
-								className: headerClassname,
-								titleVariant: headerVariant,
-								titleSemanticColor: headerSemanticColor
-							}),
-							Spicetify.React.cloneElement(children, { panel: id })
-						)
-				  );
-
-			contentMap.set(id, Spicetify.React.createElement(ErrorBoundary, { id }, content));
-
-			let isActive = Spicetify.Panel.currentPanel === id;
-
-			return {
-				id,
-				toggle: async () => {
-					const { currentPanel } = Spicetify.Panel;
-					currentPanelId = currentPanel === id ? 0 : id;
-					await Spicetify.Panel.setPanel(currentPanel === id ? 0 : id);
-				},
-				onStateChange: callback => {
-					Spicetify.Panel.subPanelState(panel => {
-						const activeState = panel === id;
-						if (activeState !== isActive) {
-							isActive = activeState;
-							callback(isActive);
-						}
-					});
-				},
-				get isActive() {
-					return Spicetify.Panel.currentPanel === id;
-				}
-			};
-		}
-	};
-
-	// Eliminate false positives
-	Spicetify.Panel.subPanelState(() => clearTimeout(refreshTimeout));
-})();
-
 (async function checkForUpdate() {
 	if (!Spicetify.Config) {
 		setTimeout(checkForUpdate, 300);
@@ -2396,90 +2387,107 @@ Spicetify.Playbar = (() => {
 	}
 	const { check_spicetify_update, version } = Spicetify.Config;
 	// Skip checking if upgrade check is disabled, or version is Dev/version is not set
-	if (!check_spicetify_update || !version || version === "Dev") {
-		return;
-	}
+	if (!check_spicetify_update || !version || version === "Dev") return;
 	// Fetch latest version from GitHub
 	try {
+		let changelog;
 		const res = await fetch("https://api.github.com/repos/spicetify/spicetify-cli/releases/latest");
 		const { tag_name, html_url, body } = await res.json();
 		const semver = tag_name.slice(1);
-		const changelogRawData = body.match(/## What's Changed([\s\S]*?)\r\n\r/)[1];
-		const changelog = [...changelogRawData.matchAll(/\r\n\*\s(.+?)\sin\shttps/g)]
-			.map(match => {
-				const featureData = match[1].split("@");
-				const feature = featureData[0];
-				const committerID = featureData[1];
-				return `<li>${feature}<a href="https://github.com/${committerID}">${committerID}</a></li>`;
-			})
-			.join("\n");
+		const changelogRawDataOld = body.match(/## What's Changed([\s\S]*?)\r\n\r/)?.[1];
+		if (changelogRawDataOld) {
+			changelog = [...changelogRawDataOld.matchAll(/\r\n\*\s(.+?)\sin\shttps/g)]
+				.map(match => {
+					const featureData = match[1].split("@");
+					const feature = featureData[0];
+					const committerID = featureData[1];
+					return `<li>${feature}<a href="https://github.com/${committerID}">${committerID}</a></li>`;
+				})
+				.join("\n");
+		} else {
+			const sections = body.split("\n## ");
+			const filteredSections = sections.filter(section => !section.startsWith("Compatibility"));
+			const filteredText = filteredSections.join("\n## ");
+			changelog = [...filteredText.matchAll(/- (?:\*\*(.+?)\*\*:? )?(.+?) \(\[(.+?)\]\((.+?)\)\)/g)]
+				.map(match => {
+					const feature = match[1];
+					const description = match[2];
+					const prNumber = match[3];
+					const prLink = match[4];
+					let text = "<li>";
+					if (feature) text += `<strong>${feature}</strong>${!feature.endsWith(":") ? ": " : " "}`;
+					text += `${description} (<a href="${prLink}">${prNumber}</a>)</li>`;
+					return text;
+				})
+				.join("\n");
+		}
 
 		if (semver !== version) {
 			const content = document.createElement("div");
 			content.id = "spicetify-update";
 			content.innerHTML = `
-                <style>
-                    #spicetify-update a {
-                        text-decoration: underline;
-                    }
-                    #spicetify-update pre {
-                        cursor: pointer;
-                        font-size: 1rem;
-                        padding: 0.5rem;
-                        background-color: var(--spice-highlight-elevated);
-                        border-radius: 0.25rem;
-                    }
-                    #spicetify-update hr {
-                        border-color: var(--spice-subtext);
-                        margin-top: 1rem;
-                        margin-bottom: 1rem;
-                    }
-                    #spicetify-update ul,
-                    #spicetify-update ol {
-                        padding-left: 1.5rem;
-                    }
-                    #spicetify-update li {
-                        margin-top: 0.5rem;
-                        margin-bottom: 0.5rem;
-                        list-style-type: disc;
-                    }
-                    #spicetify-update ol > li {
-                        list-style-type: decimal;
-                    }
-                    .spicetify-update-space {
-                        margin-bottom: 25px;
-                    }
-                    .spicetify-update-little-space {
-                        margin-bottom: 8px;
-                    }
-                </style>
-                <p class="spicetify-update-space">Update Spicetify to receive new features and bug fixes.</p>
-                <p> Current version: ${version} </p>
-                <p> Latest version:
-                    <a href="${html_url}" target="_blank" rel="noopener noreferrer">
-                        ${semver}
-                    </a>
-                </p>
-                <hr>
-                <h3>What's Changed</h3>
-                <details>
-                    <summary>
-                        See changelog
-                    </summary>
-                    <ul>
-                        ${changelog}
-                    </ul>
-                </details>
-                <hr>
-                <h3>Guide</h3>
-                <p>Run these commands in the terminal:</p>
-                <ol>
-                    <li>Update Spicetify CLI</li>
-                    <pre class="spicetify-update-little-space">spicetify update</pre>
-                    <p>Spicetify will automatically apply changes to Spotify after upgrading to the latest version.</p>
-                    <p>If you installed Spicetify via a package manager, update using said package manager.</p>
-                </ol>
-            `;
+				<style>
+					#spicetify-update a {
+						text-decoration: underline;
+					}
+					#spicetify-update pre {
+						cursor: pointer;
+						font-size: 1rem;
+						padding: 0.5rem;
+						background-color: var(--spice-highlight-elevated);
+						border-radius: 0.25rem;
+					}
+					#spicetify-update hr {
+						border-color: var(--spice-subtext);
+						margin-top: 1rem;
+						margin-bottom: 1rem;
+					}
+					#spicetify-update ul,
+					#spicetify-update ol {
+						padding-left: 1.5rem;
+					}
+					#spicetify-update li {
+						margin-top: 0.5rem;
+						margin-bottom: 0.5rem;
+						list-style-type: disc;
+					}
+					#spicetify-update ol > li {
+						list-style-type: decimal;
+					}
+					.spicetify-update-space {
+						margin-bottom: 25px;
+					}
+					.spicetify-update-little-space {
+						margin-bottom: 8px;
+					}
+				</style>
+				<p class="spicetify-update-space">Update Spicetify to receive new features and bug fixes.</p>
+				<p> Current version: ${version} </p>
+				<p> Latest version:
+					<a href="${html_url}" target="_blank" rel="noopener noreferrer">
+						${semver}
+					</a>
+				</p>
+				<hr>
+				<h3>What's Changed</h3>
+				<details>
+					<summary>
+						See changelog
+					</summary>
+					<ul>
+						${changelog}
+					</ul>
+				</details>
+				<hr>
+				<h3>Guide</h3>
+				<p>Run these commands in the terminal:</p>
+				<ol>
+					<li>Update Spicetify CLI</li>
+					<pre class="spicetify-update-little-space">spicetify update</pre>
+					<p>Spicetify will automatically apply changes to Spotify after upgrading to the latest version.</p>
+					<p>If you installed Spicetify via a package manager, update using said package manager.</p>
+				</ol>
+			`;
 
 			(function waitForTippy() {
 				if (!Spicetify.Tippy) {

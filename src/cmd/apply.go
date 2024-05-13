@@ -20,9 +20,7 @@ func Apply(spicetifyVersion string) {
 	backupSpicetifyVersion := backupSection.Key("with").MustString("")
 	if spicetifyVersion != backupSpicetifyVersion {
 		utils.PrintInfo(`Preprocessed Spotify data is outdated. Please run "spicetify restore backup apply" to receive new features and bug fixes`)
-		if !ReadAnswer("Continue applying anyway? [y/N]: ", false, true) {
-			os.Exit(1)
-		}
+		os.Exit(1)
 	}
 
 	// Copy raw assets to Spotify Apps folder if Spotify is never applied
@@ -79,7 +77,6 @@ func Apply(spicetifyVersion string) {
 		HomeConfig:           featureSection.Key("home_config").MustBool(false),
 		ExpFeatures:          featureSection.Key("experimental_features").MustBool(false),
 		SpicetifyVer:         backupSection.Key("with").MustString(""),
-		SpotifyVer:           supportedSpotifyVersion,
 	})
 	utils.PrintGreen("OK")
 
@@ -196,7 +193,6 @@ func CheckStates() {
 	if backStat.IsEmpty() {
 		if spotStat.IsBackupable() {
 			utils.PrintError(`You haven't backed up. Run "spicetify backup apply".`)
-
 		} else {
 			utils.PrintError(`You haven't backed up and Spotify cannot be backed up at this state. Please re-install Spotify then run "spicetify backup apply".`)
 		}
@@ -207,18 +203,15 @@ func CheckStates() {
 
 		if spotStat.IsMixed() {
 			utils.PrintInfo(`Spotify client possibly just had an new update.`)
-			utils.PrintInfo(`Please stop the process and then run "spicetify backup apply".`)
-
+			utils.PrintInfo(`Please run "spicetify backup apply".`)
 		} else if spotStat.IsStock() {
-			utils.PrintInfo(`Please stop the process and then run "spicetify backup apply".`)
-
+			utils.PrintInfo(`Spotify client is in stock state.`)
+			utils.PrintInfo(`Please run "spicetify backup apply".`)
 		} else {
-			utils.PrintInfo(`Spotify cannot be backed up at this state. Please stop the process and then re-install Spotify then run "spicetify backup apply".`)
+			utils.PrintInfo(`Spotify cannot be backed up at this state. Please re-install Spotify then run "spicetify backup apply".`)
 		}
 
-		if !ReadAnswer("Continue anyway? [y/N] ", false, true) {
-			os.Exit(1)
-		}
+		os.Exit(1)
 	}
 }
 
@@ -334,7 +327,7 @@ func RefreshApps(list ...string) {
 					continue
 				}
 				if len(assetsList) == 0 {
-					message := fmt.Sprintf("Custom App '%s': no assets found for expression \"%s\"", app, assetExpr)
+					message := fmt.Sprintf("Custom App '%s': no assets found for expression '%s'", app, assetExpr)
 					utils.PrintWarning(message)
 					continue
 				}
@@ -365,7 +358,7 @@ func RefreshApps(list ...string) {
 		}
 
 		jsTemplate := fmt.Sprintf(
-			`(("undefined"!=typeof self?self:global).webpackChunkopen=("undefined"!=typeof self?self:global).webpackChunkopen||[])
+			`(("undefined"!=typeof self?self:global).webpackChunkclient_web=("undefined"!=typeof self?self:global).webpackChunkclient_web||[])
 .push([["%s"],{"%s":(e,t,n)=>{
 "use strict";n.r(t),n.d(t,{default:()=>render});
 %s

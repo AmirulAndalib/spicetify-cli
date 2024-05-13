@@ -11,10 +11,11 @@ if (!navigator.serviceWorker) {
 	// setTimeout and setInterval are also throttled at 1 second.
 	// Offload setInterval to a Worker to consistently call tick function.
 	let num = null;
+	// biome-ignore lint/suspicious/noGlobalAssign: <explanation>
 	onmessage = event => {
 		if (event.data === "popup-lyric-request-update") {
 			console.warn("popup-lyric-request-update");
-			num = setInterval(() => postMessage("popup-lyric-update-ui"), 8);
+			num = setInterval(() => postMessage("popup-lyric-update-ui"), 16.66);
 		} else if (event.data === "popup-lyric-stop-update") {
 			clearInterval(num);
 			num = null;
@@ -79,7 +80,7 @@ function PopupLyrics() {
 
 	const LyricProviders = {
 		async fetchSpotify(info) {
-			const baseURL = "wg://lyrics/v1/track/";
+			const baseURL = "https://spclient.wg.spotify.com/lyrics/v1/track/";
 			const id = info.uri.split(":")[2];
 			const body = await CosmosAsync.get(baseURL + id);
 
@@ -217,7 +218,7 @@ function PopupLyrics() {
 						const result = {};
 						const matchResult = slice.match(/[^\[\]]+/g);
 						const [key, value] = matchResult[0].split(":") || [];
-						const [min, sec] = [parseFloat(key), parseFloat(value)];
+						const [min, sec] = [Number.parseFloat(key), Number.parseFloat(value)];
 						if (!Number.isNaN(min) && !Number.isNaN(sec) && !otherInfoRegexp.test(text)) {
 							result.startTime = min * 60 + sec;
 							result.text = text || "♪";
@@ -404,7 +405,7 @@ function PopupLyrics() {
 		const words = str.split(/(\p{sc=Han}|\p{sc=Katakana}|\p{sc=Hiragana}|\p{sc=Hang}|\p{gc=Punctuation})|\s+/gu);
 		let tempWord = "";
 		for (let word of words) {
-			if (!word) word = " ";
+			word ??= " ";
 			if (word) {
 				if (tempWord && /(“|')$/.test(tempWord) && word !== " ") {
 					// End of line not allowed
@@ -693,11 +694,14 @@ function PopupLyrics() {
 	}
 
 	let workerIsRunning = null;
+	let timeout = null;
 
 	async function tick(options) {
 		if (!lyricVideoIsOpen) {
 			return;
 		}
+
+		if (timeout) clearTimeout(timeout);
 
 		const audio = {
 			currentTime: (Player.getProgress() - Number(options.delay)) / 1000,
@@ -719,22 +723,24 @@ function PopupLyrics() {
 		} else if (!audio.duration || lyrics.length === 0) {
 			drawText(lyricCtx, audio.currentSrc ? "Loading" : "Waiting");
 		}
-		if (lyrics?.length) {
-			if (document.hidden) {
-				if (!workerIsRunning) {
-					worker.postMessage("popup-lyric-request-update");
-					workerIsRunning = true;
-				}
-			} else {
-				if (workerIsRunning) {
-					worker.postMessage("popup-lyric-stop-update");
-					workerIsRunning = false;
-				}
 
-				requestAnimationFrame(() => tick(options));
+		if (!lyrics?.length) {
+			timeout = setTimeout(tick, 1000, options);
+			return;
+		}
+
+		if (document.hidden) {
+			if (!workerIsRunning) {
+				worker.postMessage("popup-lyric-request-update");
+				workerIsRunning = true;
 			}
 		} else {
-			setTimeout(tick, 80, options);
+			if (workerIsRunning) {
+				worker.postMessage("popup-lyric-stop-update");
+				workerIsRunning = false;
+			}
+
+			requestAnimationFrame(() => tick(options));
 		}
 	}
 

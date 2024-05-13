@@ -96,30 +96,30 @@ func htmlMod(htmlPath string, flags Flag) {
 	helperHTML := "\n"
 
 	if flags.InjectThemeJS {
-		extensionsHTML += `<script defer src="extensions/theme.js"></script>` + "\n"
+		extensionsHTML += "<script defer src='extensions/theme.js'></script>\n"
 	}
 
 	if flags.SidebarConfig {
-		helperHTML += `<script defer src="helper/sidebarConfig.js"></script>` + "\n"
+		helperHTML += "<script defer src='helper/sidebarConfig.js'></script>\n"
 	}
 
 	if flags.HomeConfig {
-		helperHTML += `<script defer src="helper/homeConfig.js"></script>` + "\n"
+		helperHTML += "<script defer src='helper/homeConfig.js'></script>\n"
 	}
 
 	if flags.ExpFeatures {
-		helperHTML += `<script defer src="helper/expFeatures.js"></script>` + "\n"
+		helperHTML += "<script defer src='helper/expFeatures.js'></script>\n"
 	}
 
 	if flags.SpicetifyVer != "" {
 		var extList string
 		for _, ext := range flags.Extension {
-			extList += `"` + ext + `",`
+			extList += fmt.Sprintf(`"%s",`, ext)
 		}
 
 		var customAppList string
 		for _, app := range flags.CustomApp {
-			customAppList += `"` + app + `",`
+			customAppList += fmt.Sprintf(`"%s",`, app)
 		}
 
 		helperHTML += fmt.Sprintf(`<script>
@@ -136,9 +136,9 @@ func htmlMod(htmlPath string, flags Flag) {
 
 	for _, v := range flags.Extension {
 		if strings.HasSuffix(v, ".mjs") {
-			extensionsHTML += `<script defer type="module" src="extensions/` + v + `"></script>` + "\n"
+			extensionsHTML += fmt.Sprintf("<script defer type='module' src='extensions/%s'></script>\n", v)
 		} else {
-			extensionsHTML += `<script defer src="extensions/` + v + `"></script>` + "\n"
+			extensionsHTML += fmt.Sprintf("<script defer src='extensions/%s'></script>\n", v)
 		}
 	}
 
@@ -147,9 +147,9 @@ func htmlMod(htmlPath string, flags Flag) {
 		if err == nil {
 			for _, extensionFile := range manifest.ExtensionFiles {
 				if strings.HasSuffix(extensionFile, ".mjs") {
-					extensionsHTML += `<script defer type="module" src="extensions/` + v + `/` + extensionFile + `"></script>` + "\n"
+					extensionsHTML += fmt.Sprintf("<script defer type='module' src='extensions/%s/%s'></script>\n", v, extensionFile)
 				} else {
-					extensionsHTML += `<script defer src="extensions/` + v + `/` + extensionFile + `"></script>` + "\n"
+					extensionsHTML += fmt.Sprintf("<script defer src='extensions/%s/%s'></script>\n", v, extensionFile)
 				}
 			}
 		}
@@ -159,11 +159,15 @@ func htmlMod(htmlPath string, flags Flag) {
 		utils.Replace(
 			&content,
 			`<\!-- spicetify helpers -->`,
-			"${0}"+helperHTML)
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s", submatches[0], helperHTML)
+			})
 		utils.Replace(
 			&content,
 			`</body>`,
-			extensionsHTML+"${0}")
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s", extensionsHTML, submatches[0])
+			})
 		return content
 	})
 }
@@ -214,8 +218,8 @@ func getColorCSS(scheme map[string]string) string {
 
 func insertCustomApp(jsPath string, flags Flag) {
 	utils.ModifyFile(jsPath, func(content string) string {
-		const REACT_REGEX = `(\w+(?:\(\))?)\.lazy\(\((?:\(\)=>|function\(\)\{return )(\w+)\.(\w+)\(\d+\)\.then\(\w+\.bind\(\w+,\d+\)\)\}?\)\)`
-		const REACT_ELEMENT_REGEX = `(\w+(?:\(\))?\.createElement|\([\w$\.,]+\))\(([\w\.]+),\{path:"\/collection"(?:,(element|children)?[:.\w,{}()/*"]+)?\}`
+		const REACT_REGEX = `([\w_\$][\w_\$\d]*(?:\(\))?)\.lazy\(\((?:\(\)=>|function\(\)\{return )(\w+)\.(\w+)\(\d+\)\.then\(\w+\.bind\(\w+,\d+\)\)\}?\)\)`
+		const REACT_ELEMENT_REGEX = `(\[\w_\$][\w_\$\d]*(?:\(\))?\.createElement|\([\w$\.,]+\))\(([\w\.]+),\{path:"\/collection"(?:,(element|children)?[:.\w,{}()$/*"]+)?\}`
 		reactSymbs := utils.FindSymbol(
 			"Custom app React symbols",
 			content,
@@ -228,7 +232,8 @@ func insertCustomApp(jsPath string, flags Flag) {
 				REACT_ELEMENT_REGEX})
 
 		if (len(reactSymbs) < 2) || (len(eleSymbs) == 0) {
-			utils.PrintError("Spotify version mismatch with Spicetify\nSpicetify currently only supports until Spotify v" + flags.SpotifyVer)
+			utils.PrintError("Spotify version mismatch with Spicetify. Please report it on our github repository.")
+			utils.PrintInfo("Spicetify might have been updated for this version already. Please run `spicetify update` to check for a new version. If one isn't available yet, please wait for the update to be released.")
 			return content
 		}
 
@@ -266,79 +271,90 @@ func insertCustomApp(jsPath string, flags Flag) {
 		utils.Replace(
 			&content,
 			`\{(\d+:"xpui)`,
-			`{`+appMap+`${1}`)
+			func(submatches ...string) string {
+				return fmt.Sprintf("{%s%s", appMap, submatches[1])
+			})
 
 		utils.ReplaceOnce(
 			&content,
 			REACT_REGEX,
-			`${0}`+appReactMap)
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s", submatches[0], appReactMap)
+			})
 
 		utils.ReplaceOnce(
 			&content,
 			REACT_ELEMENT_REGEX,
-			appEleMap+`${0}`)
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s", appEleMap, submatches[0])
+			})
 
-		utils.Replace(
-			&content,
-			`(?:\w+(?:\(\))?\.createElement|\([\w$\.,]+\))\("li",\{className:[\w$\.]+\}?,(?:children:)?[\w$\.,()]+\(\w+,\{uri:"spotify:user:@:collection",to:"/collection"`,
-			`Spicetify._sidebarItemToClone=${0}`)
-
-		utils.Replace(
-			&content,
-			`(?:\w+(?:\(\))?\.createElement|\([\w$.,_]+\))\("li",{className:[-\w".${}()?!:, ]+,children:(?:\w+(?:\(\))?\.createElement|\([\w$.,_]+\))\([\w$._]+,{label:[-\w".${}()?!:, ]+,(\w+:[-\w".${}()?!&: ]+,)*children:(?:\w+(?:\(\))?\.createElement|\([\w$.,_]+\))\([\w$._]+,\{to:"/search"`,
-			`Spicetify._sidebarXItemToClone=${0}`)
+		content = insertNavLink(content, appNameArray)
 
 		utils.ReplaceOnce(
 			&content,
 			`\d+:1,\d+:1,\d+:1`,
-			"${0}"+cssEnableMap)
-
-		sidebarItemMatch := utils.SeekToCloseParen(
-			content,
-			`\("li",\{className:[\w$\.]+\}?,(?:children:)?[\w$\.,()]+\(\w+,\{uri:"spotify:user:@:collection",to:"/collection"`,
-			'(', ')')
-
-		// Prevent breaking on future Spotify update
-		if sidebarItemMatch != "" {
-			content = strings.Replace(
-				content,
-				sidebarItemMatch,
-				sidebarItemMatch+",Spicetify._cloneSidebarItem(["+appNameArray+"])",
-				1)
-		}
-
-		sidebarXItemMatch := utils.SeekToCloseParen(
-			content,
-			`\("li",{className:[-\w".${}()?!:, ]+,children:(?:\w+(?:\(\))?\.createElement|\([\w$.,_]+\))\([\w$._]+,{label:[-\w".${}()?!:, ]+,(\w+:[-\w".${}()?!&: ]+,)*children:(?:\w+(?:\(\))?\.createElement|\([\w$.,_]+\))\([\w$._]+,\{to:"/search"`,
-			'(', ')')
-
-		// Prevent breaking on future Spotify update
-		if sidebarXItemMatch != "" {
-			content = strings.Replace(
-				content,
-				sidebarXItemMatch,
-				sidebarXItemMatch+",Spicetify._cloneSidebarItem(["+appNameArray+"],true)",
-				1)
-		} else {
-			utils.PrintWarning("Sidebar X item not found, ignoring")
-		}
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s", submatches[0], cssEnableMap)
+			})
 
 		if flags.SidebarConfig {
 			utils.ReplaceOnce(
 				&content,
 				`return null!=\w+&&\w+\.totalLength(\?\w+\(\)\.createElement\(\w+,\{contextUri:)(\w+)\.uri`,
-				`return true${1}${2}?.uri||""`)
+				func(submatches ...string) string {
+					return fmt.Sprintf(`return true%s%s?.uri||""`, submatches[1], submatches[2])
+				})
 		}
 
 		if flags.ExpFeatures {
 			utils.ReplaceOnce(
 				&content,
 				`(([\w$.]+\.fromJSON)\(\w+\)+;)(return ?[\w{}().,]+[\w$]+\.Provider,)(\{value:\{localConfiguration)`,
-				`${1}Spicetify.createInternalMap=${2};${3}Spicetify.RemoteConfigResolver=${4}`)
+				func(submatches ...string) string {
+					return fmt.Sprintf("%sSpicetify.createInternalMap=%s;%sSpicetify.RemoteConfigResolver=%s", submatches[1], submatches[2], submatches[3], submatches[4])
+				})
 		}
 
 		return content
 	})
+}
+
+func insertNavLink(str string, appNameArray string) string {
+	// Library X
+	libraryXItemMatch := utils.SeekToCloseParen(
+		str,
+		`\("li",\{[^\{]*\{[^\{]*\{to:"\/search`,
+		'(', ')')
+
+	if libraryXItemMatch != "" {
+		str = strings.Replace(
+			str,
+			libraryXItemMatch,
+			fmt.Sprintf("%s,Spicetify._renderNavLinks([%s], false)", libraryXItemMatch, appNameArray),
+			1)
+	}
+
+	// pre-Library X
+	sidebarItemMatch := utils.SeekToCloseParen(
+		str,
+		`\("li",\{className:[\w$\.]+\}?,(?:children:)?[\w$\.,()]+\(\w+,\{uri:"spotify:user:@:collection",to:"/collection"`,
+		'(', ')')
+
+	if sidebarItemMatch != "" {
+		str = strings.Replace(
+			str,
+			sidebarItemMatch,
+			fmt.Sprintf("%s,Spicetify._renderNavLinks([%s], false, true)", sidebarItemMatch, appNameArray),
+			1)
+	}
+
+	// Global Navbar
+	utils.ReplaceOnce(&str, `(,[a-zA-Z_\$][\w\$]*===(?:[a-zA-Z_\$][\w\$]*\.){2}HOME_NEXT_TO_NAVIGATION&&.+?)\]`, func(submatches ...string) string {
+		return fmt.Sprintf("%s,Spicetify._renderNavLinks([%s], true)]", submatches[1], appNameArray)
+	})
+
+	return str
 }
 
 func insertHomeConfig(jsPath string, flags Flag) {
@@ -349,8 +365,10 @@ func insertHomeConfig(jsPath string, flags Flag) {
 	utils.ModifyFile(jsPath, func(content string) string {
 		utils.ReplaceOnce(
 			&content,
-			`([\w$_\.]+\.sections\.items)(\.map)`,
-			`SpicetifyHomeConfig.arrange(${1})${2}`)
+			`(createDesktopHomeFeatureActivationShelfEventFactory.*?)([\w\.]+)(\.map)`,
+			func(submatches ...string) string {
+				return fmt.Sprintf("%sSpicetifyHomeConfig.arrange(%s)%s", submatches[1], submatches[2], submatches[3])
+			})
 		return content
 	})
 }
@@ -374,7 +392,9 @@ func insertExpFeatures(jsPath string, flags Flag) {
 		utils.ReplaceOnce(
 			&content,
 			`(function \w+\((\w+)\)\{)(\w+ \w+=\w\.name;if\("internal")`,
-			`${1}${2}=Spicetify.expFeatureOverride(${2});${3}`)
+			func(submatches ...string) string {
+				return fmt.Sprintf("%s%s=Spicetify.expFeatureOverride(%s);%s", submatches[1], submatches[2], submatches[2], submatches[3])
+			})
 		return content
 	})
 }
@@ -384,12 +404,14 @@ func insertVersionInfo(jsPath string, flags Flag) {
 		utils.ReplaceOnce(
 			&content,
 			`(\w+(?:\(\))?\.createElement|\([\w$\.,]+\))\([\w\."]+,[\w{}():,]+\.containerVersion\}?\),`,
-			`${0}${1}("details",{children: [
-				${1}("summary",{children: "Spicetify v" + Spicetify.Config.version}),
-				${1}("li",{children: "Theme: " + Spicetify.Config.current_theme + (Spicetify.Config.color_scheme && " / ") + Spicetify.Config.color_scheme}),
-				${1}("li",{children: "Extensions: " + Spicetify.Config.extensions.join(", ")}),
-				${1}("li",{children: "Custom apps: " + Spicetify.Config.custom_apps.join(", ")}),
-				]}),`)
+			func(submatches ...string) string {
+				return fmt.Sprintf(`%s%s("details",{children: [
+					%s("summary",{children: "Spicetify v" + Spicetify.Config.version}),
+					%s("li",{children: "Theme: " + Spicetify.Config.current_theme + (Spicetify.Config.color_scheme && " / ") + Spicetify.Config.color_scheme}),
+					%s("li",{children: "Extensions: " + Spicetify.Config.extensions.join(", ")}),
+					%s("li",{children: "Custom apps: " + Spicetify.Config.custom_apps.join(", ")}),
+					]}),`, submatches[0], submatches[1], submatches[1], submatches[1], submatches[1], submatches[1])
+			})
 		return content
 	})
 }

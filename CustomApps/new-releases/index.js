@@ -55,7 +55,7 @@ let gridUpdatePostsVisual;
 let removeCards;
 
 let today = Date.now();
-CONFIG.range = parseInt(CONFIG.range) || 30;
+CONFIG.range = Number.parseInt(CONFIG.range) || 30;
 const DAY_DIVIDER = 24 * 3600 * 1000;
 let limitInMs = CONFIG.range * DAY_DIVIDER;
 const dateFormat = {
@@ -70,7 +70,7 @@ let separatedByDate = {};
 let dateList = [];
 
 class Grid extends react.Component {
-	viewportSelector = "#main .os-viewport";
+	viewportSelector = document.querySelector("#main .os-viewport") ? "#main .os-viewport" : "#main .main-view-container__scroll-node";
 
 	constructor() {
 		super();
@@ -137,7 +137,7 @@ class Grid extends react.Component {
 		dateList = [];
 
 		today = Date.now();
-		CONFIG.range = parseInt(CONFIG.range) || 30;
+		CONFIG.range = Number.parseInt(CONFIG.range) || 30;
 		limitInMs = CONFIG.range * DAY_DIVIDER;
 
 		this.setState({ rest: false });
